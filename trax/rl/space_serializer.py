@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -24,7 +24,7 @@ import copy
 from absl import logging
 import gin
 import gym
-import numpy as np
+from jax import numpy as np
 
 
 class SpaceSerializer(object):
@@ -122,7 +122,7 @@ class BoxSpaceSerializer(SpaceSerializer):
           str(bounded_space.low), str(bounded_space.high)
       )
 
-    super(BoxSpaceSerializer, self).__init__(bounded_space, vocab_size)
+    super().__init__(bounded_space, vocab_size)
 
   def serialize(self, data):
     array = data
@@ -134,7 +134,7 @@ class BoxSpaceSerializer(SpaceSerializer):
       threshold = self._vocab_size ** digit_index
       digit = np.array(array / threshold).astype(np.int32)
       # For the corner case of x == high.
-      digit[digit == self._vocab_size] -= 1
+      digit = np.where(digit == self._vocab_size, digit - 1, digit)
       digits.append(digit)
       array -= digit * threshold
     digits = np.stack(digits, axis=-1)
@@ -171,7 +171,7 @@ class DiscreteSpaceSerializer(SpaceSerializer):
   representation_length = 1
 
   def __init__(self, space, vocab_size):
-    super(DiscreteSpaceSerializer, self).__init__(space, vocab_size)
+    super().__init__(space, vocab_size)
     assert space.n <= vocab_size, (
         'Discrete space size should fit in the number of symbols.')
 
@@ -196,7 +196,7 @@ class MultiDiscreteSpaceSerializer(SpaceSerializer):
   space_type = gym.spaces.MultiDiscrete
 
   def __init__(self, space, vocab_size):
-    super(MultiDiscreteSpaceSerializer, self).__init__(space, vocab_size)
+    super().__init__(space, vocab_size)
     assert np.max(space.nvec) <= vocab_size, (
         'MultiDiscrete maximum number of categories should fit in the number '
         'of symbols.'

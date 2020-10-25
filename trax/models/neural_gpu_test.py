@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,27 +13,24 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Tests for trax.models.neural_gpu."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import absltest
-import numpy as onp
-from trax.layers import base
+import numpy as np
+
+from trax import shapes
 from trax.models import neural_gpu
-from trax.shapes import ShapeDtype
 
 
 class NeuralGPUTest(absltest.TestCase):
 
   def test_ngpu(self):
-    vocab_size = 2
-    input_signature = ShapeDtype((3, 5, 7), onp.int32)
-    model = neural_gpu.NeuralGPU(d_feature=30, steps=4, vocab_size=vocab_size)
-    final_shape = base.check_shape_agreement(model, input_signature)
-    self.assertEqual((3, 5, 7, vocab_size), final_shape)
+    model = neural_gpu.NeuralGPU(d_feature=30, steps=4, vocab_size=22)
+    x = np.ones((3, 5, 7)).astype(np.int32)
+    _, _ = model.init(shapes.signature(x))
+    y = model(x)
+    self.assertEqual(y.shape, (3, 5, 7, 22))
 
 
 if __name__ == '__main__':

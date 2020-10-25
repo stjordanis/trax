@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -55,7 +55,8 @@ class BoxSpaceSerializerTest(test.TestCase):
     input_array = self._sample_batch(space)
     representation = serializer.serialize(input_array)
     output_array = serializer.deserialize(representation)
-    np.testing.assert_array_almost_equal(input_array, output_array)
+    # Testing till 5 decimals to reduce flakyness.
+    np.testing.assert_array_almost_equal(input_array, output_array, decimal=5)
 
   def test_representation_changes(self):
     (space, serializer) = self._make_space_and_serializer()
@@ -96,7 +97,7 @@ class BoxSpaceSerializerTest(test.TestCase):
 class DiscreteSpaceSerializerTest(test.TestCase):
 
   def setUp(self):
-    super(DiscreteSpaceSerializerTest, self).setUp()
+    super().setUp()
     self._space = gym.spaces.Discrete(n=2)
     self._serializer = space_serializer.create(self._space, vocab_size=2)
 
@@ -128,7 +129,7 @@ class DiscreteSpaceSerializerTest(test.TestCase):
 class MultiDiscreteSpaceSerializerTest(test.TestCase):
 
   def setUp(self):
-    super(MultiDiscreteSpaceSerializerTest, self).setUp()
+    super().setUp()
     self._space = gym.spaces.MultiDiscrete(nvec=[2, 2])
     self._serializer = space_serializer.create(self._space, vocab_size=2)
 

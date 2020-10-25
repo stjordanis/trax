@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,18 +13,18 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Trax initializers."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from absl import logging
 
-import numpy as onp
-from trax.backend import numpy as np
-from trax.backend import random
+import numpy as np
+import tensorflow.compat.v2 as tf
+from trax.fastmath import numpy as jnp
+from trax.fastmath import random
 
 
-def _GetFans(shape, out_dim=-1, in_dim=-2):
+def _GetFans(shape, out_dim=-1, in_dim=-2, nonreceptive_dims=None):
   """Get the fan-in and fan-out sizes for the given shape and dims."""
   # Temporary fix until numpy.delete supports negative indices.
   if out_dim < 0:
@@ -32,7 +32,13 @@ def _GetFans(shape, out_dim=-1, in_dim=-2):
   if in_dim < 0:
     in_dim += len(shape)
 
-  receptive_field = np.prod(onp.delete(shape, [in_dim, out_dim]))
+  if nonreceptive_dims is None:
+    nonreceptive_dims = []
+  if not isinstance(nonreceptive_dims, (list, tuple)):
+    nonreceptive_dims = [nonreceptive_dims]
+
+  receptive_field = jnp.prod(np.delete(shape, [in_dim, out_dim,
+                                               *nonreceptive_dims]))
   if len(shape) >= 2:
     fan_in, fan_out = shape[in_dim], shape[out_dim]
   elif len(shape) == 1:
@@ -46,16 +52,37 @@ def _GetFans(shape, out_dim=-1, in_dim=-2):
   return fan_in, fan_out
 
 
+def InitializerFromFile(path):
+  """Loads parameters from .npy file."""
+
+  def Initializer(shape, rng):
+    del rng
+    logging.info('Loading pretrained embeddings from %s', path)
+    with tf.io.gfile.GFile(path, 'rb') as f:
+      parameters = jnp.load(f)
+    assert jnp.shape(parameters) == shape, (
+        'Expected shape %s, got %s' % (shape, jnp.shape(parameters)))
+    return parameters
+
+  return Initializer
+
+
+def _PureShape(shape):
+  """Make sure shape does not contain int tensors by calling int()."""
+  return [int(x) for x in shape]
+
+
 def RandomNormalInitializer(stddev=1e-2):
   """Returns an initializer for random normal coefficients."""
-  return (
-      lambda shape, rng: (stddev * random.normal(rng, shape)).astype('float32')
-  )
+  return lambda shape, rng: (stddev * random.normal(  # pylint: disable=g-long-lambda
+      rng, _PureShape(shape)).astype('float32'))
 
 
 def RandomUniformInitializer(lim=1.0):
   """Returns an initializer for random uniform coefficients."""
-  return lambda shape, rng: random.uniform(rng, shape, np.float32, -lim, lim)
+  # Make sure shape does not contain int tensors by calling int() below.
+  return lambda shape, rng: random.uniform(  # pylint: disable=g-long-lambda
+      rng, _PureShape(shape), jnp.float32, -lim, lim)
 
 
 def ScaledInitializer(out_dim, in_dim, scale, mode, distribution):
@@ -67,9 +94,10 @@ def ScaledInitializer(out_dim, in_dim, scale, mode, distribution):
         'Invalid mode argument:, {}, must be either fan_in, fan_out or fan_avg'
         .format(mode))
 
-  def Init(shape, rng):
+  def Init(shape, rng, nonreceptive_dims=None):
     """Returns random values for initializing weights of the given `shape`."""
-    fan_in, fan_out = _GetFans(shape, out_dim, in_dim)
+    shape = _PureShape(shape)
+    fan_in, fan_out = _GetFans(shape, out_dim, in_dim, nonreceptive_dims)
     gain = scale
     if mode == 'fan_in':
       gain /= fan_in
@@ -79,15 +107,15 @@ def ScaledInitializer(out_dim, in_dim, scale, mode, distribution):
       gain /= (fan_in + fan_out) / 2
     if distribution == 'truncated_normal':
       # constant from scipy.stats.truncnorm.std(a=-2, b=2, loc=0., scale=1.)
-      stddev = np.sqrt(gain) / .87962566103423978
+      stddev = jnp.sqrt(gain) / .87962566103423978
       new_weights = random.truncated_normal(rng, -2, 2, shape) * stddev
       return new_weights.astype('float32')
     elif distribution == 'normal':
-      new_weights = random.normal(rng, shape) * np.sqrt(gain)
+      new_weights = random.normal(rng, shape) * jnp.sqrt(gain)
       return new_weights.astype('float32')
     elif distribution == 'uniform':
-      lim = np.sqrt(3. * gain)
-      return random.uniform(rng, shape, np.float32, -lim, lim)
+      lim = jnp.sqrt(3. * gain)
+      return random.uniform(rng, shape, jnp.float32, -lim, lim)
     else:
       raise ValueError('invalid distribution for ScaleInitializer')
 
@@ -117,13 +145,13 @@ def LeCunUniformInitializer(out_dim=-1, in_dim=-2, scale=1.):
 def KaimingNormalInitializer(out_dim=-1, in_dim=-2, param=0.):
   """Returns an initializer for random Kaiming-scaled coefficients."""
   return ScaledInitializer(
-      out_dim, in_dim, 2.0 / np.sqrt(1 + param**2), 'fan_in', 'normal')
+      out_dim, in_dim, 2.0 / jnp.sqrt(1 + param**2), 'fan_in', 'normal')
 
 
 def KaimingUniformInitializer(out_dim=-1, in_dim=-2, param=0.):
   """Returns an initializer for random uniform Kaiming-scaled coefficients."""
   return ScaledInitializer(
-      out_dim, in_dim, 2.0 / np.sqrt(1 + param**2), 'fan_in', 'uniform')
+      out_dim, in_dim, 2.0 / jnp.sqrt(1 + param**2), 'fan_in', 'uniform')
 
 
 def OrthogonalInitializer(stddev=1.0):
@@ -143,21 +171,28 @@ def OrthogonalInitializer(stddev=1.0):
     flat_shape = (n_cols, n_rows) if n_rows < n_cols else (n_rows, n_cols)
 
     # Generate a random matrix
-    a = random.normal(rng, flat_shape, dtype=np.float32)
+    a = random.normal(rng, flat_shape, dtype=jnp.float32)
 
     # Compute the qr factorization
-    q, r = np.linalg.qr(a)
+    q, r = jnp.linalg.qr(a)
 
     # Make Q uniform
-    d = np.diag(r)
-    q *= np.sign(d)
+    d = jnp.diag(r)
+    q *= jnp.sign(d)
 
     # Transpose and reshape back q if needed.
     if n_rows < n_cols:
-      q = np.transpose(q)
-    q = np.reshape(q, shape)
+      q = jnp.transpose(q)
+    q = jnp.reshape(q, shape)
 
     # Return scaled as requested.
     return stddev * q
 
   return Init
+
+
+def AtariConvInit(kernel_shape, rng, dtype=jnp.float32):
+  """The standard init for Conv laters and Atari."""
+  filter_height, filter_width, fan_in, _ = kernel_shape
+  std = 1 / jnp.sqrt(fan_in * filter_height * filter_width)
+  return random.uniform(rng, kernel_shape, dtype, minval=-std, maxval=std)

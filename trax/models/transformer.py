@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,10 +13,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Transformer Models."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+# Lint as: python3
+"""Transformer models: encoder, decoder, language model, and encoder-decoder.
+
+The "Transformer" name and network architecture were introduced in the paper
+[Attention Is All You Need](https://arxiv.org/abs/1706.03762).
+"""
 
 from trax import layers as tl
 
@@ -27,54 +29,75 @@ def TransformerEncoder(vocab_size,
                        d_ff=2048,
                        n_layers=6,
                        n_heads=8,
-                       dropout=0.1,
                        max_len=2048,
+                       dropout=0.1,
+                       dropout_shared_axes=None,
                        mode='train',
                        ff_activation=tl.Relu):
-  """Returns a Transformer encoder model.
+  """Returns a Transformer encoder merged with an N-way categorization head.
 
-  The input to the model is a tensor of tokens.
+  This model performs text categorization:
+
+    - input: rank 2 tensor representing a batch of text strings via token IDs
+      plus padding markers; shape is (batch_size, sequence_length). The tensor
+      elements are integers in `range(vocab_size)`, and `0` values mark padding
+      positions.
+
+    - output: rank 2 tensor representing a batch of log-probability
+      distributions over N categories; shape is (batch_size, `n_classes`).
 
   Args:
-    vocab_size: int: vocab size
-    n_classes: how many classes on output
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    n_layers: int: number of encoder/decoder layers
-    n_heads: int: number of attention heads
-    dropout: float: dropout rate (how much to drop out)
-    max_len: int: maximum symbol length for positional encoding
-    mode: str: 'train' or 'eval'
-    ff_activation: the non-linearity in feed-forward layer
+    vocab_size: Input vocabulary size -- each element of the input tensor
+        should be an integer in `range(vocab_size)`. These integers typically
+        represent token IDs from a vocabulary-based tokenizer.
+    n_classes: Final dimension of the output tensors, representing N-way
+        classification.
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each encoder
+        block.
+    n_layers: Number of encoder blocks. Each block includes attention, dropout,
+        residual, feed-forward (`Dense`), and activation layers.
+    n_heads: Number of attention heads.
+    max_len: Maximum symbol length for positional encoding.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within an encoder block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'train'`, each encoder block will include dropout; else, it will
+        pass all values through unaltered.
+    ff_activation: Type of activation function at the end of each encoder
+        block; must be an activation-type subclass of `Layer`.
 
   Returns:
-    A Transformer model as a layer that maps from a tensor of tokens to
-    activations over a set of output classes.
+    A Transformer model that maps strings (conveyed via token IDs) to
+    probability-like activations over a range of output classes.
   """
-  def EncoderBlocks(n_blocks):  # vectors masks --> vectors masks
-    return [
-        _EncoderBlock(d_model, d_ff, n_heads, dropout, i, mode, ff_activation)
-        for i in range(n_blocks)]
+  positional_encoder = [
+      tl.Embedding(vocab_size, d_model),
+      tl.Dropout(rate=dropout, shared_axes=dropout_shared_axes, mode=mode),
+      tl.PositionalEncoding(max_len=max_len)]
 
-  positional_embedder = [
-      tl.Embedding(d_model, vocab_size),
-      tl.Dropout(rate=dropout, name='emb_dropout', mode=mode),
-      tl.PositionalEncoding(max_len=max_len),
-  ]
+  encoder_blocks = [
+      _EncoderBlock(d_model, d_ff, n_heads, dropout, dropout_shared_axes,
+                    mode, ff_activation)
+      for i in range(n_layers)]
 
   # Assemble and return the model.
-  return tl.Serial(                                # toks
+  return tl.Serial(                               # toks
       # Encode.
       tl.Branch(
-          positional_embedder, tl.PaddingMask()),  # vecs masks
-      EncoderBlocks(n_layers),                     # vecs masks
-      tl.LayerNorm(),                              # vecs .....
+          positional_encoder, tl.PaddingMask()),  # vecs masks
+      encoder_blocks,                             # vecs masks
+      tl.Select([0], n_in=2),                     # vecs
+      tl.LayerNorm(),                             # vecs
 
       # Map to output categories.
-      tl.Select([0], n_in=2),                      # vecs
-      tl.Mean(axis=1),                             # vecs
-      tl.Dense(n_classes),                         # vecs
-      tl.LogSoftmax(),                             # vecs
+      tl.Mean(axis=1),                            # vecs
+      tl.Dense(n_classes),                        # vecs
+      tl.LogSoftmax(),                            # vecs
   )
 
 
@@ -83,62 +106,77 @@ def TransformerDecoder(vocab_size=None,
                        d_ff=2048,
                        n_layers=6,
                        n_heads=8,
-                       d_attention_key=None,
-                       d_attention_value=None,
-                       attention_type=tl.DotProductCausalAttention,
-                       dropout=0.1,
-                       share_qk=False,
                        max_len=2048,
+                       dropout=0.1,
+                       dropout_shared_axes=None,
                        mode='train',
                        ff_activation=tl.Relu):
-  """Returns a Transformer decoder model.
+  """Returns a Transformer decoder.
 
-  The input to the model is either continuous or discrete - controlled by
-  vocab_size. Does not shift the input to the right, i.e. the output for
-  timestep t is based on inputs up to timestep t inclusively.
+  This model maps sequential inputs to sequential outputs:
+
+    - input if `vocab_size` is specified: rank 2 tensor representing a batch
+      of text strings via token IDs plus padding markers; shape is
+      (batch_size, sequence_length). The tensor elements are integers in
+      `range(vocab_size)`, and `0` values mark padding positions.
+
+    - input if `vocab_size` is None: rank 2 tensor representing a batch
+      of activation vectors; shape is (batch_size, sequence_length, `d_model`).
+
+    - output: rank 3 tensor with shape (batch_size, sequence_length, `d_model`).
+
+  The model uses causal attention and does *not* shift the input to the right.
+  Thus, the output for position `t` is based on inputs up to and including
+  position `t`.
 
   Args:
-    vocab_size: int or None: vocab size if running on discrete input, None
-      otherwise.
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    n_layers: int: number of encoder/decoder layers
-    n_heads: int: number of attention heads
-    d_attention_key: int: depth of key vector for each attention head (default
-      is d_model // n_heads)
-    d_attention_value: int: depth of value vector for each attention head
-      (default is d_model // n_heads)
-    attention_type: subclass of tl.BaseCausalAttention: attention class to use
-    dropout: float: dropout rate (how much to drop out)
-    share_qk: bool, whether to share queries and keys in decoder attention
-    max_len: int: maximum symbol length for positional encoding
-    mode: str: 'train' or 'eval'
-    ff_activation: the non-linearity in feed-forward layer
+    vocab_size: If specified, gives the input vocabulary size -- each element
+        of the input tensor should be an integer in `range(vocab_size)`.
+        If None, indicates that the model expects as input floating point
+        vectors, each with `d_model` components.
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each decoder
+        block.
+    n_layers: Number of decoder blocks. Each block includes attention, dropout,
+        residual, feed-forward (`Dense`), and activation layers.
+    n_heads: Number of attention heads.
+    max_len: Maximum symbol length for positional encoding.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within a decoder block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'train'`, each decoder block will include dropout; else, it will
+        pass all values through unaltered.
+    ff_activation: Type of activation function at the end of each decoder
+        block; must be an activation-type subclass of `Layer`.
 
   Returns:
-    A Transformer decoder as a layer that maps from a continuous or discrete
-    tensor to a continuous tensor.
-  """
-  def DecoderBlocks(n_blocks):  # vectors --> vectors
-    return [  # pylint: disable=g-complex-comprehension
-        _DecoderBlock(d_model, d_ff, n_heads,
-                      d_attention_key, d_attention_value, attention_type,
-                      dropout, share_qk, i, mode, ff_activation)
-        for i in range(n_blocks)]
+    If `vocab_size` is defined: a Transformer model that maps strings (conveyed
+    via token IDs) to sequences of activation vectors.
 
-  embedding_or_dense = (
-      tl.Embedding(d_model, vocab_size) if vocab_size is not None
-      else tl.Dense(d_model))
-  dropout_ = tl.Dropout(rate=dropout, mode=mode)
-  positional_encoding = tl.PositionalEncoding(max_len=max_len)
+    If `vocab_size` is None: a Transformer model that maps sequences of
+    activation vectors to sequences of activation vectors.
+  """
+  positional_encoder = [
+      (tl.Embedding(vocab_size, d_model) if vocab_size is not None
+       else tl.Dense(d_model)),
+      tl.Dropout(rate=dropout, shared_axes=dropout_shared_axes, mode=mode),
+      tl.PositionalEncoding(max_len=max_len)]
+
+  decoder_blocks = [
+      # pylint: disable=g-complex-comprehension
+      _DecoderBlock(d_model, d_ff, n_heads,
+                    dropout, dropout_shared_axes, mode, ff_activation)
+      for i in range(n_layers)]
 
   # Assemble and return the model.
-  return tl.Serial(             # toks
-      embedding_or_dense,       # vecs
-      dropout_,                 # vecs
-      positional_encoding,      # vecs
-      DecoderBlocks(n_layers),  # vecs
-      tl.LayerNorm(),           # vecs
+  return tl.Serial(        # toks
+      positional_encoder,  # vecs
+      decoder_blocks,      # vecs
+      tl.LayerNorm(),      # vecs
   )
 
 
@@ -147,72 +185,72 @@ def TransformerLM(vocab_size,
                   d_ff=2048,
                   n_layers=6,
                   n_heads=8,
-                  d_attention_key=None,
-                  d_attention_value=None,
-                  attention_type=tl.DotProductCausalAttention,
-                  dropout=0.1,
-                  share_qk=False,
                   max_len=2048,
-                  n_chunks=0,
+                  dropout=0.1,
+                  dropout_shared_axes=None,
                   mode='train',
                   ff_activation=tl.Relu):
   """Returns a Transformer language model.
 
-  The input to the model is a tensor of tokens. (This model uses only the
-  decoder part of the overall Transformer.)
+  This model performs autoregressive language modeling:
+
+    - input: rank 2 tensor representing a batch of text strings via token IDs
+      plus padding markers; shape is (batch_size, sequence_length). The tensor
+      elements are integers in `range(vocab_size)`, and `0` values mark padding
+      positions.
+
+    - output: rank 3 tensor representing a batch of log-probability
+      distributions for each sequence position over possible token IDs;
+      shape is (batch_size, sequence_length, `vocab_size`).
+
+  This model uses only the decoder part of the overall Transformer.
 
   Args:
-    vocab_size: int: vocab size
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    n_layers: int: number of encoder/decoder layers
-    n_heads: int: number of attention heads
-    d_attention_key: int: depth of key vector for each attention head (default
-      is d_model // n_heads)
-    d_attention_value: int: depth of value vector for each attention head
-      (default is d_model // n_heads)
-    attention_type: subclass of tl.BaseCausalAttention: attention class to use
-    dropout: float: dropout rate (how much to drop out)
-    share_qk: bool, whether to share queries and keys in decoder attention
-    max_len: int: maximum symbol length for positional encoding
-    n_chunks: int: number of chunks (must match input pipeline)
-    mode: str: 'train', 'eval' or 'predict', predict mode is for fast inference
-    ff_activation: the non-linearity in feed-forward layer
+    vocab_size: Input vocabulary size -- each element of the input tensor
+        should be an integer in `range(vocab_size)`. These integers typically
+        represent token IDs from a vocabulary-based tokenizer.
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each encoder
+        block.
+    n_layers: Number of encoder blocks. Each block includes attention, dropout,
+        residual, feed-forward (`Dense`), and activation layers.
+    n_heads: Number of attention heads.
+    max_len: Maximum symbol length for positional encoding.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within an encoder block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'predict'`, use fast inference. If `'train'`, each encoder block
+        will include dropout; else, it will pass all values through unaltered.
+    ff_activation: Type of activation function at the end of each encoder
+        block; must be an activation-type subclass of `Layer`.
 
   Returns:
     A Transformer language model as a layer that maps from a tensor of tokens
     to activations over a vocab set.
   """
-  def DecoderBlocks(n_blocks):  # vectors --> vectors
-    return [  # pylint: disable=g-complex-comprehension
-        _DecoderBlock(d_model, d_ff, n_heads,
-                      d_attention_key, d_attention_value, attention_type,
-                      dropout, share_qk, i, mode, ff_activation)
-        for i in range(n_blocks)]
+  positional_encoder = [
+      tl.Embedding(vocab_size, d_model),
+      tl.Dropout(rate=dropout, shared_axes=dropout_shared_axes, mode=mode),
+      tl.PositionalEncoding(max_len=max_len, mode=mode)]
 
-  if n_chunks == 0:
-    concatenate_chunks = []
-    split_chunks = []
-  else:
-    concatenate_chunks = tl.Concatenate(n_items=n_chunks)
-    split_chunks = tl.Split(n_items=n_chunks, axis=-2)
-
-  embedding = tl.Embedding(d_model, vocab_size)
-  dropout_ = tl.Dropout(rate=dropout, name='embedding', mode=mode)
-  positional_encoding = tl.PositionalEncoding(max_len=max_len, mode=mode)
+  decoder_blocks = [
+      # pylint: disable=g-complex-comprehension
+      _DecoderBlock(d_model, d_ff, n_heads,
+                    dropout, dropout_shared_axes, mode, ff_activation)
+      for i in range(n_layers)]
 
   # Assemble and return the model.
   return tl.Serial(              # tokens (or chunked tuple of tokens)
-      concatenate_chunks,        # toks
       tl.ShiftRight(mode=mode),  # toks
-      embedding,                 # vecs
-      dropout_,                  # vecs
-      positional_encoding,       # vecs
-      DecoderBlocks(n_layers),   # vecs
+      positional_encoder,        # vecs
+      decoder_blocks,            # vecs
       tl.LayerNorm(),            # vecs
       tl.Dense(vocab_size),      # vecs
       tl.LogSoftmax(),           # vecs
-      split_chunks,              # vecs (or chunked tuple of vecs)
   )
 
 
@@ -223,100 +261,156 @@ def Transformer(input_vocab_size,
                 n_encoder_layers=6,
                 n_decoder_layers=6,
                 n_heads=8,
-                dropout=0.1,
                 max_len=2048,
+                dropout=0.1,
+                dropout_shared_axes=None,
                 mode='train',
                 ff_activation=tl.Relu):
-  """Returns a Transformer model.
+  """Returns a full Transformer model.
 
-  This model expects an input pair: target, source.
+  This model is an encoder-decoder that performs tokenized string-to-string
+  ("source"-to-"target") transduction:
+
+    - inputs (2):
+
+        - source: rank 2 tensor representing a batch of text strings via token
+          IDs plus padding markers; shape is (batch_size, sequence_length). The
+          tensor elements are integers in `range(input_vocab_size)`, and `0`
+          values mark padding positions.
+
+        - target: rank 2 tensor representing a batch of text strings via token
+          IDs plus padding markers; shape is (batch_size, sequence_length). The
+          tensor elements are integers in `range(output_vocab_size)`, and `0`
+          values mark padding positions.
+
+    - output: rank 3 tensor representing a batch of log-probability
+      distributions for each sequence position over possible token IDs;
+      shape is (batch_size, sequence_length, `vocab_size`).
+
+  An example use would be to translate (tokenized) sentences from English to
+  German.
 
   Args:
-    input_vocab_size: int: vocab size of the source.
-    output_vocab_size: int (optional): vocab size of the target. If None, the
-      source and target are assumed to have the same vocab.
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    n_encoder_layers: int: number of encoder layers
-    n_decoder_layers: int: number of decoder layers
-    n_heads: int: number of attention heads
-    dropout: float: dropout rate (how much to drop out)
-    max_len: int: maximum symbol length for positional encoding
-    mode: str: 'train' or 'eval'
-    ff_activation: the non-linearity in feed-forward layer
+    input_vocab_size: Input vocabulary size -- each element of the input tensor
+        should be an integer in `range(vocab_size)`. These integers typically
+        represent token IDs from a vocabulary-based tokenizer.
+    output_vocab_size: If specified, gives the vocabulary size for the targets;
+        if None, then input and target integers (token IDs) are assumed to come
+        from the same vocabulary.
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each encoder
+        and decoder block.
+    n_encoder_layers: Number of encoder blocks.
+    n_decoder_layers: Number of decoder blocks.
+    n_heads: Number of attention heads.
+    max_len: Maximum symbol length for positional encoding.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within an encoder/decoder block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'predict'`, use fast inference. If `'train'`, each encoder/decoder
+        block will include dropout; else, it will pass all values through
+        unaltered.
+    ff_activation: Type of activation function at the end of each
+        encoder/decoder block; must be an activation-type subclass of `Layer`.
 
   Returns:
-    A Transformer model as a layer that maps from a target, source pair to
-    activations over a vocab set.
+    A Transformer model as a layer that maps from a source-target tokenized
+    text pair to activations over a vocab set.
   """
-  def PositionalEmbedder(vocab_size):  # tokens --> vectors
+  def Embedder(vocab_size):  # tokens --> vectors
     return [
-        tl.Embedding(d_model, vocab_size),
-        tl.Dropout(rate=dropout, mode=mode),
-        tl.PositionalEncoding(max_len=max_len),
+        tl.Embedding(vocab_size, d_model),
+        tl.Dropout(rate=dropout, shared_axes=dropout_shared_axes, mode=mode),
     ]
 
-  def EncoderBlocks(n_blocks):  # vectors masks --> vectors masks
-    return [
-        _EncoderBlock(d_model, d_ff, n_heads, dropout, i, mode, ff_activation)
-        for i in range(n_blocks)]
+  in_embedder = Embedder(input_vocab_size)
+  out_embedder = (in_embedder if output_vocab_size is None
+                  else Embedder(output_vocab_size))
 
-  def EncoderDecoderBlocks(n_blocks):  # vectors masks --> vectors masks
-    return [
-        _EncoderDecoderBlock(d_model, d_ff, n_heads, dropout, i, mode,
-                             ff_activation)
-        for i in range(n_blocks)]
+  # Positional encodings are not shared between encoder and decoder.
+  # Since encoder doesn't run stepwise, we do not use predict mode there.
+  encoder_mode = 'eval' if mode == 'predict' else mode
+  in_encoder = in_embedder + [
+      tl.PositionalEncoding(max_len=max_len, mode=encoder_mode)
+  ]
+  out_encoder = out_embedder + [
+      tl.PositionalEncoding(max_len=max_len, mode=mode)
+  ]
 
-  in_embed = PositionalEmbedder(input_vocab_size)
-  out_embed = (in_embed if output_vocab_size is None
-               else PositionalEmbedder(output_vocab_size))
   if output_vocab_size is None:
     output_vocab_size = input_vocab_size
+
+  encoder_blocks = [
+      _EncoderBlock(d_model, d_ff, n_heads, dropout, dropout_shared_axes,
+                    mode, ff_activation)
+      for i in range(n_encoder_layers)]
+
+  encoder = tl.Serial(
+      in_encoder,
+      encoder_blocks,
+      tl.LayerNorm()
+  )
+  if mode == 'predict':
+    encoder = tl.Cache(encoder)
+
+  encoder_decoder_blocks = [
+      _EncoderDecoderBlock(d_model, d_ff, n_heads, dropout, dropout_shared_axes,
+                           mode, ff_activation)
+      for i in range(n_decoder_layers)]
 
   # Assemble and return the model.
   return tl.Serial(
       # Input: encoder_side_tokens, decoder_side_tokens
       # Copy decoder tokens for use in loss.
-      tl.Select([0, 1, 1]),                    # tok_e tok_d tok_d
+      tl.Select([0, 1, 1]),               # tok_e tok_d tok_d
 
       # Encode.
-      tl.Branch(
-          in_embed, tl.PaddingMask()),         # vec_e masks ..... .....
-      EncoderBlocks(n_encoder_layers),         # vec_d masks ..... .....
-      tl.LayerNorm(),                          # vec_e ..... ..... .....
+      tl.Branch([], tl.PaddingMask()),    # tok_e masks ..... .....
+      encoder,                            # vec_e ..... ..... .....
 
       # Decode.
-      tl.Select([2, 1, 0]),                    # tok_d masks vec_e .....
-      tl.ShiftRight(),                         # tok_d ..... ..... .....
-      out_embed,                               # vec_d ..... ..... .....
+      tl.Select([2, 1, 0]),               # tok_d masks vec_e .....
+      tl.ShiftRight(mode=mode),           # tok_d ..... ..... .....
+      out_encoder,                        # vec_d ..... ..... .....
       tl.Branch(
-          [], tl.EncoderDecoderMask()),        # vec_d masks ..... .....
-      EncoderDecoderBlocks(n_decoder_layers),  # vec_d masks ..... .....
-      tl.LayerNorm(),                          # vec_d ..... ..... .....
+          [], tl.EncoderDecoderMask()),   # vec_d masks ..... .....
+      encoder_decoder_blocks,             # vec_d masks ..... .....
+      tl.LayerNorm(),                     # vec_d ..... ..... .....
 
       # Map to output vocab.
-      tl.Parallel([], tl.Drop(), tl.Drop()),   # vec_d tok_d
-      tl.Dense(output_vocab_size),             # vec_d .....
-      tl.LogSoftmax(),                         # vec_d .....
+      tl.Select([0], n_in=3),             # vec_d tok_d
+      tl.Dense(output_vocab_size),        # vec_d .....
+      tl.LogSoftmax(),                    # vec_d .....
   )
 
 
-def _EncoderBlock(d_model, d_ff, n_heads, dropout, layer_idx, mode,
-                  ff_activation):
+def _EncoderBlock(d_model, d_ff, n_heads,
+                  dropout, dropout_shared_axes, mode, ff_activation):
   """Returns a list of layers that implements a Transformer encoder block.
 
-  The input to the layer is a pair, (activations, mask), where the mask was
+  The input to the block is a pair, (activations, mask), where the mask was
   created from the original source tokens to prevent attending to the padding
   part of the input.
 
   Args:
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    n_heads: int: number of attention heads
-    dropout: float: dropout rate (how much to drop out)
-    layer_idx: which layer are we at (for bookkeeping)
-    mode: str: 'train' or 'eval'
-    ff_activation: the non-linearity in feed-forward layer
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each block.
+    n_heads: Number of attention heads.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within a block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'train'`, each block will include dropout; else, it will
+        pass all values through unaltered.
+    ff_activation: Type of activation function at the end of each block; must
+        be an activation-type subclass of `Layer`.
 
   Returns:
     A list of layers that maps (activations, mask) to (activations, mask).
@@ -324,11 +418,11 @@ def _EncoderBlock(d_model, d_ff, n_heads, dropout, layer_idx, mode,
   attention = tl.Attention(
       d_model, n_heads=n_heads, dropout=dropout, mode=mode)
 
-  dropout_ = tl.Dropout(
-      rate=dropout, name='dropout_enc_attn', mode=mode)
-
   feed_forward = _FeedForwardBlock(
-      d_model, d_ff, dropout, layer_idx, mode, ff_activation)
+      d_model, d_ff, dropout, dropout_shared_axes, mode, ff_activation)
+
+  dropout_ = tl.Dropout(
+      rate=dropout, shared_axes=dropout_shared_axes, mode=mode)
 
   return [
       tl.Residual(
@@ -342,38 +436,39 @@ def _EncoderBlock(d_model, d_ff, n_heads, dropout, layer_idx, mode,
   ]
 
 
-def _DecoderBlock(d_model, d_ff, n_heads, d_attn_key, d_attn_value, attn_type,
-                  dropout, share_qk, layer_idx, mode, ff_activation):
+def _DecoderBlock(d_model, d_ff, n_heads,
+                  dropout, dropout_shared_axes, mode, ff_activation):
   """Returns a list of layers that implements a Transformer decoder block.
 
   The input is an activation tensor.
 
   Args:
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    n_heads: int: number of attention heads
-    d_attn_key: int: depth of key vector for each attention head
-    d_attn_value: int: depth of value vector for each attention head
-    attn_type: subclass of tl.BaseCausalAttention: attention class to use
-    dropout: float: dropout rate (how much to drop out)
-    share_qk: bool, whether to share queries and keys
-    layer_idx: which layer are we at (for bookkeeping)
-    mode: str: 'train' or 'eval'
-    ff_activation: the non-linearity in feed-forward layer
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each block.
+    n_heads: Number of attention heads.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within a block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'train'`, each block will include dropout; else, it will
+        pass all values through unaltered.
+    ff_activation: Type of activation function at the end of each block; must
+        be an activation-type subclass of `Layer`.
 
   Returns:
     A list of layers that maps an activation tensor to an activation tensor.
   """
   causal_attention = tl.CausalAttention(
-      d_model, n_heads=n_heads, d_attention_key=d_attn_key,
-      d_attention_value=d_attn_value, attention_type=attn_type,
-      share_qk=share_qk, mode=mode),
-
-  dropout_ = tl.Dropout(
-      rate=dropout, name='attention_%d' % layer_idx, mode=mode)
+      d_model, n_heads=n_heads, dropout=dropout, mode=mode),
 
   feed_forward = _FeedForwardBlock(
-      d_model, d_ff, dropout, layer_idx, mode, ff_activation)
+      d_model, d_ff, dropout, dropout_shared_axes, mode, ff_activation)
+
+  dropout_ = tl.Dropout(
+      rate=dropout, shared_axes=dropout_shared_axes, mode=mode)
 
   return [
       tl.Residual(
@@ -387,43 +482,50 @@ def _DecoderBlock(d_model, d_ff, n_heads, d_attn_key, d_attn_value, attn_type,
   ]
 
 
-def _EncoderDecoderBlock(d_model, d_ff, n_heads, dropout, layer_idx, mode,
-                         ff_activation):
+def _EncoderDecoderBlock(d_model, d_ff, n_heads,
+                         dropout, dropout_shared_axes, mode, ff_activation):
   """Returns a list of layers implementing a Transformer encoder-decoder block.
 
-  The input is a triple (decoder_input, mask, encoder) where the mask is
-  created from the original source to prevent attending to the padding part
-  of the encoder.
+  The input is a triple (decoder_activations, mask, encoder_activiations) where
+  the mask is created from the original input token IDs to prevent attending to
+  the padding part of the encoder.
 
   Args:
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    n_heads: int: number of attention heads
-    dropout: float: dropout rate (how much to drop out)
-    layer_idx: which layer are we at (for bookkeeping)
-    mode: str: 'train' or 'eval'
-    ff_activation: the non-linearity in feed-forward layer
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each block.
+    n_heads: Number of attention heads.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within a block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'train'`, each block will include dropout; else, it will
+        pass all values through unaltered.
+    ff_activation: Type of activation function at the end of each block; must
+        be an activation-type subclass of `Layer`.
 
   Returns:
     A list of layers which maps triples (decoder_activations, mask,
     encoder_activations) to triples of the same sort.
   """
   def _Dropout():
-    return tl.Dropout(rate=dropout, mode=mode)
+    return tl.Dropout(rate=dropout, shared_axes=dropout_shared_axes, mode=mode)
 
   attention_qkv = tl.AttentionQKV(
       d_model, n_heads=n_heads, dropout=dropout, mode=mode)
 
-  basic_causal_attention = tl.BasicCausalAttention(
-      d_model, n_heads=n_heads, dropout=dropout, mode=mode)
+  causal_attention = tl.CausalAttention(
+      d_model, n_heads=n_heads, mode=mode)
 
   feed_forward = _FeedForwardBlock(
-      d_model, d_ff, dropout, layer_idx, mode, ff_activation)
+      d_model, d_ff, dropout, dropout_shared_axes, mode, ff_activation)
 
   return [                             # vec_d masks vec_e
       tl.Residual(
           tl.LayerNorm(),              # vec_d ..... .....
-          basic_causal_attention,      # vec_d masks .....
+          causal_attention,            # vec_d ..... .....
           _Dropout(),                  # vec_d ..... .....
       ),
       tl.Residual(
@@ -438,24 +540,32 @@ def _EncoderDecoderBlock(d_model, d_ff, n_heads, dropout, layer_idx, mode,
   ]
 
 
-def _FeedForwardBlock(d_model, d_ff, dropout, layer_idx, mode, activation):
+def _FeedForwardBlock(d_model, d_ff, dropout, dropout_shared_axes,
+                      mode, activation):
   """Returns a list of layers implementing a feed-forward block.
 
   Args:
-    d_model: int:  depth of embedding
-    d_ff: int: depth of feed-forward layer
-    dropout: float: dropout rate (how much to drop out)
-    layer_idx: which layer are we at (for bookkeeping)
-    mode: str: 'train' or 'eval'
-    activation: the non-linearity in feed-forward layer
+    d_model: Final dimension of tensors at most points in the model, including
+        the initial embedding output.
+    d_ff: Size of special dense layer in the feed-forward part of each block.
+    dropout: Stochastic rate (probability) for dropping an activation value
+        when applying dropout within a block.
+    dropout_shared_axes: Tensor axes on which to share a dropout mask.
+        Sharing along batch and sequence axes (`dropout_shared_axes=(0,1)`) is
+        a useful way to save memory and apply consistent masks to activation
+        vectors at different sequence positions.
+    mode: If `'train'`, each block will include dropout; else, it will
+        pass all values through unaltered.
+    activation: Type of activation function at the end of each block; must
+        be an activation-type subclass of `Layer`.
 
   Returns:
     A list of layers which maps vectors to vectors.
   """
   dropout_middle = tl.Dropout(
-      rate=dropout, name='ff_middle_%d' % layer_idx, mode=mode)
+      rate=dropout, shared_axes=dropout_shared_axes, mode=mode)
   dropout_final = tl.Dropout(
-      rate=dropout, name='ff_final_%d' % layer_idx, mode=mode)
+      rate=dropout, shared_axes=dropout_shared_axes, mode=mode)
 
   return [
       tl.LayerNorm(),
@@ -465,3 +575,4 @@ def _FeedForwardBlock(d_model, d_ff, dropout, layer_idx, mode, activation):
       tl.Dense(d_model),
       dropout_final,
   ]
+

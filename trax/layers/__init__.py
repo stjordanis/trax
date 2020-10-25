@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,15 +13,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Layers defined in trax."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+# Lint as: python3
+"""Layers: trainable functions as neural network building blocks."""
 
 import gin
 # We create a flat layers.* namespace for uniform calling conventions as we
 # upstream changes.
 # pylint: disable=wildcard-import
+from trax.layers.acceleration import *
+from trax.layers.activation_fns import *
+from trax.layers.assert_shape import *
 from trax.layers.attention import *
 from trax.layers.base import *
 from trax.layers.combinators import *
@@ -31,9 +32,11 @@ from trax.layers.initializers import *
 from trax.layers.metrics import *
 from trax.layers.normalization import *
 from trax.layers.pooling import *
+from trax.layers.research.efficient_attention import *
+from trax.layers.research.position_encodings import *
+from trax.layers.research.sparsity import *
 from trax.layers.reversible import *
 from trax.layers.rnn import *
-from trax.layers.tracer import symbolic
 
 
 # Ginify
@@ -54,16 +57,34 @@ Exp = layer_configure(Exp)
 LogSoftmax = layer_configure(LogSoftmax)
 Softmax = layer_configure(Softmax)
 Softplus = layer_configure(Softplus)
-L2LossScalar = layer_configure(L2LossScalar)
+L2Loss = layer_configure(L2Loss)
 LSTMCell = layer_configure(LSTMCell)
 GRUCell = layer_configure(GRUCell)
 
+BatchNorm = layer_configure(BatchNorm)
+LayerNorm = layer_configure(LayerNorm)
+FilterResponseNorm = layer_configure(FilterResponseNorm)
+ThresholdedLinearUnit = layer_configure(ThresholdedLinearUnit)
 
+CausalAttention = layer_configure(CausalAttention, blacklist=['mode'])
+CausalFavor = layer_configure(CausalFavor, blacklist=['mode'])
 DotProductCausalAttention = layer_configure(
     DotProductCausalAttention, blacklist=['mode'])
-MemoryEfficientCausalAttention = layer_configure(
-    MemoryEfficientCausalAttention, blacklist=['mode'])
-TimeBinCausalAttention = layer_configure(
-    TimeBinCausalAttention, blacklist=['mode'])
-LSHCausalAttention = layer_configure(
-    LSHCausalAttention, blacklist=['mode'])
+SelfAttention = layer_configure(SelfAttention, blacklist=['mode'])
+ModularCausalAttention = layer_configure(ModularCausalAttention,
+                                         blacklist=['mode'])
+LowRankCausalAttention = layer_configure(LowRankCausalAttention,
+                                         blacklist=['mode'])
+MultiplicativeCausalAttention = layer_configure(MultiplicativeCausalAttention,
+                                                blacklist=['mode'])
+MultiplicativeModularCausalAttention = layer_configure(
+    MultiplicativeModularCausalAttention, blacklist=['mode'])
+LSHSelfAttention = layer_configure(LSHSelfAttention, blacklist=['mode'])
+EncDecAttention = layer_configure(EncDecAttention, blacklist=['mode'])
+
+InfinitePositionalEncoding = layer_configure(
+    InfinitePositionalEncoding, blacklist=['mode'])
+TimeBinPositionalEncoding = layer_configure(
+    TimeBinPositionalEncoding, blacklist=['mode'])
+
+AtariConvInit = layer_configure(AtariConvInit)

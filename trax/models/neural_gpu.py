@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,36 +13,34 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Implementation of the improved Neural GPU (NGPU)."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from trax import layers as tl
-from trax.backend import numpy as np
+from trax.fastmath import numpy as jnp
 
 
 # TODO(ddohan): Combinator to add saturation costs to loss
 def SaturationCost(x, limit=0.9):
-  return np.minimum(0, np.abs(x) - limit)
+  return jnp.minimum(0, jnp.abs(x) - limit)
 
 
-@tl.layer()
-def DiagonalGate(x, **kwargs):
+def DiagonalGate():
   """Split channels in 3 parts. Shifts 1st and 3rd sections to left/right."""
-  del kwargs
-  # x : [batch, 1, length, depth]
-  x = np.pad(
-      x, [(0, 0), (0, 0), (1, 1), (0, 0)], mode='constant', constant_values=0.0)
-  depth = x.shape[-1] // 3
-  assert 3 * depth == x.shape[-1], ('Depth must be divisible by 3', depth,
-                                    x.shape)
-  xs = [
-      x[:, :, :-2, :depth], x[:, :, 1:-1, depth:2 * depth],
-      x[:, :, 2:, 2 * depth:3 * depth]
-  ]
-  return np.concatenate(xs, axis=3)
+
+  def f(x):  # pylint: disable=invalid-name
+    # x : [batch, 1, length, depth]
+    x = jnp.pad(x, [(0, 0), (0, 0), (1, 1), (0, 0)],
+                mode='constant', constant_values=0.0)
+    depth = x.shape[-1] // 3
+    assert 3 * depth == x.shape[-1], ('Depth must be divisible by 3', depth,
+                                      x.shape)
+    xs = [
+        x[:, :, :-2, :depth], x[:, :, 1:-1, depth:2 * depth],
+        x[:, :, 2:, 2 * depth:3 * depth]
+    ]
+    return jnp.concatenate(xs, axis=3)
+  return tl.Fn('DiagonalGate', f)
 
 
 def ConvDiagonalGRU(units, kernel_size=(3, 3)):
@@ -74,7 +72,7 @@ def NeuralGPU(d_feature=96, steps=16, vocab_size=2, mode='train'):
 
   core = ConvDiagonalGRU(units=d_feature)
   return tl.Serial(
-      tl.Embedding(d_feature=d_feature, vocab_size=vocab_size),
+      tl.Embedding(vocab_size=vocab_size, d_feature=d_feature),
       [core] * steps,
       tl.Dense(vocab_size),
       tl.LogSoftmax(),

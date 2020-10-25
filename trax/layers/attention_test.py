@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,95 +13,104 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Tests for trax.layers.attention."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+from absl.testing import absltest
+import numpy as np
 
-import numpy as onp
-from tensorflow import test
-from trax.layers import attention
-from trax.layers import base
-from trax.shapes import ShapeDtype
+from trax import shapes
+
+import trax.layers as tl
 
 
-class AttentionTest(test.TestCase):
+class AttentionTest(absltest.TestCase):
+
+  def test_simple_call(self):
+    layer = tl.CausalAttention(d_feature=4, n_heads=2)
+    x = [np.array([[[2, 5, 3, 4],
+                    [0, 1, 2, 3],
+                    [0, 1, 2, 3],]]),
+         np.array([[[[1, 0, 1]]]])]
+    _, _ = layer.init(shapes.signature(x))
+
+    y, mask = layer(x)
+    self.assertEqual(y.shape, (1, 3, 4))
+    self.assertEqual(mask.shape, (1, 1, 1, 3))
 
   def test_shift_right(self):
     # Test shifts right on axis=1
-    layer = attention.ShiftRight()
-    input_np = onp.arange(2*3*3).reshape(2, 3, 3)
-    output_np = layer(input_np)
-    self.assertEqual(input_np.shape, output_np.shape)
-    self.assertAllEqual(onp.array([[[0, 0, 0],
-                                    [0, 1, 2],
-                                    [3, 4, 5]],
-
-                                   [[0, 0, 0],
-                                    [9, 10, 11],
-                                    [12, 13, 14]]]),
-                        output_np)
+    layer = tl.ShiftRight()
+    x = np.array([[[9, 9, 9],
+                   [8, 8, 8],
+                   [7, 7, 7],
+                   [6, 6, 6]],
+                  [[99, 98, 97],
+                   [96, 95, 94],
+                   [93, 92, 91],
+                   [90, 89, 88]]])
+    y = layer(x)
+    self.assertEqual(x.shape, y.shape)
+    self.assertEqual(tl.to_list(y), [[[0, 0, 0],
+                                      [9, 9, 9],
+                                      [8, 8, 8],
+                                      [7, 7, 7]],
+                                     [[0, 0, 0],
+                                      [99, 98, 97],
+                                      [96, 95, 94],
+                                      [93, 92, 91]]])
 
   def test_shift_right_float(self):
-    layer = attention.ShiftRight()
-    input_np = onp.arange(2*3*3).reshape(2, 3, 3).astype(onp.float32)
-    # Test on a float array.
-    input_np = input_np.astype(onp.float32)
-    input_np /= 2.0
-    self.assertEqual(input_np.dtype, onp.float32)
+    layer = tl.ShiftRight()
+    x = np.array([[[9, 9, 9],
+                   [8, 8, 8],
+                   [7, 7, 7],
+                   [6, 6, 6]],
+                  [[99, 98, 97],
+                   [96, 95, 94],
+                   [93, 92, 91],
+                   [90, 89, 88]]]).astype(np.float32)
+    x /= 2.0
+    self.assertEqual(x.dtype, np.float32)
 
-    output_np = layer(input_np)
-    self.assertEqual(input_np.shape, output_np.shape)
-    self.assertEqual(output_np.dtype, onp.float32)
+    y = layer(x)
+    self.assertEqual(y.dtype, np.float32)
+    self.assertEqual(tl.to_list(y), [[[0.0, 0.0, 0.0],
+                                      [4.5, 4.5, 4.5],
+                                      [4.0, 4.0, 4.0],
+                                      [3.5, 3.5, 3.5]],
+                                     [[0.0, 0.0, 0.0],
+                                      [49.5, 49.0, 48.5],
+                                      [48.0, 47.5, 47.0],
+                                      [46.5, 46.0, 45.5]]])
 
-    self.assertAllEqual(onp.array([[[0., 0., 0.],
-                                    [0., 0.5, 1.],
-                                    [1.5, 2., 2.5]],
+  def test_padding_mask(self):
+    layer = tl.PaddingMask()
+    x = np.array([
+        [1., 2., 3., 4., 0.],
+        [1., 2., 3., 0., 0.],
+        [1., 2., 0., 0., 0.],
+    ])
+    y = layer(x)
+    self.assertEqual(x.shape, (3, 5))
+    self.assertEqual(y.shape, (3, 1, 1, 5))
+    np.testing.assert_equal(y, [[[[True, True, True, True, False]]],
+                                [[[True, True, True, False, False]]],
+                                [[[True, True, False, False, False]]]])
 
-                                   [[0., 0., 0.],
-                                    [4.5, 5., 5.5],
-                                    [6., 6.5, 7.]]]),
-                        output_np)
 
-  def test_merged_hashed_causal_attention(self):
-    qkv_shape = ShapeDtype((3, 32, 8))
-    input_signature = (qkv_shape, qkv_shape, qkv_shape)
-    layer = attention.MemoryEfficientCausalAttention(
-        loop_stride=16, dropout=0.1, mode='train')
-    final_shape = base.check_shape_agreement(layer, input_signature)
-    self.assertEqual((3, 32, 8), final_shape)
+class CausalAttentionTest(absltest.TestCase):
 
-  def test_time_bin_causal_attention_bin_length(self):
-    qkv_shape = ShapeDtype((3, 57, 8))
-    input_signature = (qkv_shape, qkv_shape, qkv_shape)
-    layer = attention.TimeBinCausalAttention(
-        bin_length=16, dropout=0.1, mode='train')
-    final_shape = base.check_shape_agreement(layer, input_signature)
-    self.assertEqual((3, 57, 8), final_shape)
+  def test_simple_call(self):
+    layer = tl.CausalAttention(d_feature=4, n_heads=2)
+    x = np.array([[[2, 5, 3, 4],
+                   [0, 1, 2, 3],
+                   [0, 1, 2, 3],]])
+    _, _ = layer.init(shapes.signature(x))
 
-  def test_time_bin_causal_attention_n_bins(self):
-    qkv_shape = ShapeDtype((3, 57, 8))
-    input_signature = (qkv_shape, qkv_shape, qkv_shape)
-    layer = attention.TimeBinCausalAttention(
-        n_bins=4, dropout=0.1, mode='train')
-    final_shape = base.check_shape_agreement(layer, input_signature)
-    self.assertEqual((3, 57, 8), final_shape)
-
-  def test_time_bin_and_dot_product_causal_attention_are_consistent(self):
-    dot_product_layer = attention.DotProductCausalAttention(
-        dropout=0.0, mode='train')
-    time_bin_layer = attention.TimeBinCausalAttention(
-        bin_length=4, dropout=0.0, mode='train')
-
-    # Exactly 2 bins.
-    input_shape = (3, 8, 8)
-    inputs = [onp.random.uniform(size=input_shape) for _ in range(3)]
-
-    dot_product_output = dot_product_layer(inputs)
-    time_bin_output = time_bin_layer(inputs)
-    onp.testing.assert_array_almost_equal(dot_product_output, time_bin_output)
+    y = layer(x)
+    self.assertEqual(y.shape, (1, 3, 4))
 
 
 if __name__ == '__main__':
-  test.main()
+  absltest.main()

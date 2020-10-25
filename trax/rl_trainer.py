@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,19 +19,17 @@ For now we only support PPO as RL algorithm.
 
 Sample invocation:
 
-TRAIN_BATCH_SIZE=32
-python trax/rl_trainer.py \
-  --config_file=trax/rl/configs/acrobot.gin \
-  --train_batch_size=${TRAIN_BATCH_SIZE} \
-  --output_dir=${HOME}/ppo_acrobot \
-  --vmodule=*/tensor2tensor/*=1 \
-  --alsologtostderr
+.. code-block:: bash
+
+    TRAIN_BATCH_SIZE=32
+    python trax/rl_trainer.py \
+      --config_file=trax/rl/configs/ppo_acrobot.gin \
+      --train_batch_size=${TRAIN_BATCH_SIZE} \
+      --output_dir=${HOME}/ppo_acrobot \
+      --alsologtostderr
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
+import faulthandler
 import multiprocessing
 import os
 
@@ -43,40 +41,15 @@ import jax
 from jax.config import config
 from tensor2tensor import envs  # pylint: disable=unused-import
 from tensor2tensor.envs import env_problem_utils
-from tensor2tensor.rl.google import atari_utils  # GOOGLE-INTERNAL:
+from trax import fastmath
 from trax import rl  # pylint: disable=unused-import
-from trax.rl import envs as rl_envs  # pylint: disable=unused-import
-from trax.rl import trainers as rl_trainers
+from trax import trainer_flags  # pylint: disable=unused-import
+from trax.rl import task as rl_task
+from trax.rl import training as light_trainers
+from trax.tf_numpy import numpy as tf_np
 
 
 FLAGS = flags.FLAGS
-
-flags.DEFINE_boolean(
-    'jax_debug_nans', False,
-    'Setting to true will help to debug nans and disable jit.')
-flags.DEFINE_boolean('disable_jit', False, 'Setting to true will disable jit.')
-
-flags.DEFINE_string('output_dir', '', 'Output dir.')
-flags.DEFINE_string('envs_output_dir', '', 'Output dir for the envs.')
-flags.DEFINE_multi_string('config_file', None,
-                          'Configuration file with parameters (.gin).')
-flags.DEFINE_multi_string('config', None,
-                          'Configuration parameters (gin string).')
-flags.DEFINE_bool('use_tpu', False, "Whether we're running on TPU.")
-flags.DEFINE_bool('xm', False, 'Copy atari roms?')
-flags.DEFINE_integer('train_batch_size', 32,
-                     'Number of parallel environments during training.')
-flags.DEFINE_integer('eval_batch_size', 4, 'Batch size for evaluation.')
-flags.DEFINE_boolean('parallelize_envs', False,
-                     'If true, sets parallelism to number of cpu cores.')
-flags.DEFINE_string('trajectory_dump_dir', '',
-                    'Directory to dump trajectories to.')
-
-# TODO(afrozm): Find a better way to do these configurations.
-flags.DEFINE_string('train_server_bns', '', "Train Server's BNS.")
-flags.DEFINE_string('eval_server_bns', '', "Eval Server's BNS.")
-
-flags.DEFINE_bool('async_mode', False, 'Async mode.')
 
 
 # Not just 'train' to avoid a conflict with trax.train in GIN files.
@@ -87,14 +60,18 @@ def train_rl(
     output_dir,
     train_batch_size,
     eval_batch_size,
-    env_name='ClientEnv-v0',
+    env_name='Acrobot-v1',
     max_timestep=None,
     clip_rewards=False,
     rendered_env=False,
+    resize=False,
     resize_dims=(105, 80),
-    trainer_class=rl_trainers.PPO,
+    trainer_class=None,
     n_epochs=10000,
     trajectory_dump_dir=None,
+    num_actions=None,
+    light_rl=True,
+    light_rl_trainer=light_trainers.PolicyGradient,
 ):
   """Train the RL agent.
 
@@ -108,12 +85,28 @@ def train_rl(
     clip_rewards: Whether to clip and discretize the rewards.
     rendered_env: Whether the environment has visual input. If so, a
       RenderedEnvProblem will be used.
+    resize: whether to do resize or not
     resize_dims: Pair (height, width), dimensions to resize the visual
       observations to.
     trainer_class: RLTrainer class to use.
     n_epochs: Number epochs to run the training for.
     trajectory_dump_dir: Directory to dump trajectories to.
+    num_actions: None unless one wants to use the discretization wrapper. Then
+      num_actions specifies the number of discrete actions.
+    light_rl: whether to use the light RL setting (experimental).
+    light_rl_trainer: which light RL trainer to use (experimental).
   """
+  tf_np.set_allow_float64(FLAGS.tf_allow_float64)
+
+  if light_rl:
+    task = rl_task.RLTask()
+    env_name = task.env_name
+  else:
+    # TODO(lukaszkaiser): remove the name light and all references.
+    # It was kept for now to make sure all regression tests pass first,
+    # so that if we need to revert we save some work.
+    raise ValueError('Non-light RL is deprecated.')
+
 
   if FLAGS.jax_debug_nans:
     config.update('jax_debug_nans', True)
@@ -121,8 +114,33 @@ def train_rl(
   if FLAGS.use_tpu:
     config.update('jax_platform_name', 'tpu')
   else:
-    config.update('jax_platform_name', 'gpu')
+    config.update('jax_platform_name', '')
 
+
+  if light_rl:
+    trainer = light_rl_trainer(task=task, output_dir=output_dir)
+    def light_training_loop():
+      """Run the trainer for n_epochs and call close on it."""
+      try:
+        logging.info('Starting RL training for %d epochs.', n_epochs)
+        trainer.run(n_epochs, n_epochs_is_total_epochs=True)
+        logging.info('Completed RL training for %d epochs.', n_epochs)
+        trainer.close()
+        logging.info('Trainer is now closed.')
+      except Exception as e:
+        raise e
+      finally:
+        logging.info('Encountered an exception, still calling trainer.close()')
+        trainer.close()
+        logging.info('Trainer is now closed.')
+
+    if FLAGS.jax_debug_nans or FLAGS.disable_jit:
+      fastmath.disable_jit()
+      with jax.disable_jit():
+        light_training_loop()
+    else:
+      light_training_loop()
+    return
 
   # TODO(pkozakowski): Find a better way to determine this.
   train_env_kwargs = {}
@@ -134,39 +152,36 @@ def train_rl(
     train_env_kwargs = {'output_dir': train_env_output_dir}
     eval_env_kwargs = {'output_dir': eval_env_output_dir}
 
-  if 'ClientEnv' in env_name:
-    train_env_kwargs['per_env_kwargs'] = [{
-        'remote_env_address': os.path.join(FLAGS.train_server_bns, str(replica))
-    } for replica in range(train_batch_size)]
-
-    eval_env_kwargs['per_env_kwargs'] = [{
-        'remote_env_address': os.path.join(FLAGS.eval_server_bns, str(replica))
-    } for replica in range(eval_batch_size)]
-
-  # TODO(afrozm): Should we leave out some cores?
   parallelism = multiprocessing.cpu_count() if FLAGS.parallelize_envs else 1
+
+  logging.info('Num discretized actions %s', num_actions)
+  logging.info('Resize %d', resize)
 
   train_env = env_problem_utils.make_env(
       batch_size=train_batch_size,
       env_problem_name=env_name,
-      resize=rendered_env,
+      rendered_env=rendered_env,
+      resize=resize,
       resize_dims=resize_dims,
       max_timestep=max_timestep,
       clip_rewards=clip_rewards,
       parallelism=parallelism,
       use_tpu=FLAGS.use_tpu,
+      num_actions=num_actions,
       **train_env_kwargs)
   assert train_env
 
   eval_env = env_problem_utils.make_env(
       batch_size=eval_batch_size,
       env_problem_name=env_name,
-      resize=rendered_env,
+      rendered_env=rendered_env,
+      resize=resize,
       resize_dims=resize_dims,
       max_timestep=max_timestep,
       clip_rewards=clip_rewards,
       parallelism=parallelism,
       use_tpu=FLAGS.use_tpu,
+      num_actions=num_actions,
       **eval_env_kwargs)
   assert eval_env
 
@@ -184,6 +199,7 @@ def train_rl(
     trainer.training_loop(n_epochs=n_epochs)
 
   if FLAGS.jax_debug_nans or FLAGS.disable_jit:
+    fastmath.disable_jit()
     with jax.disable_jit():
       run_training_loop()
   else:
@@ -194,8 +210,11 @@ def main(argv):
   del argv
   logging.info('Starting RL training.')
 
-  gin_configs = FLAGS.config or []
+  gin_configs = FLAGS.config if FLAGS.config is not None else []
   gin.parse_config_files_and_bindings(FLAGS.config_file, gin_configs)
+
+  logging.info('Gin config:')
+  logging.info(gin_configs)
 
   train_rl(
       output_dir=FLAGS.output_dir,
@@ -203,6 +222,12 @@ def main(argv):
       eval_batch_size=FLAGS.eval_batch_size,
       trajectory_dump_dir=(FLAGS.trajectory_dump_dir or None),
   )
+
+  # TODO(afrozm): This is for debugging.
+  logging.info('Dumping stack traces of all stacks.')
+  faulthandler.dump_traceback(all_threads=True)
+
+  logging.info('Training is done, should exit.')
 
 
 if __name__ == '__main__':

@@ -1,4 +1,4 @@
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -28,7 +28,7 @@ git clone https://github.com/google/trax.git
 cd trax
 git checkout $GIT_COMMIT_ID
 
-pip install wheel twine pyopenssl
+python -m pip install wheel twine pyopenssl
 
 # Build the distribution
 echo "Building distribution"

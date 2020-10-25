@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -29,83 +29,100 @@ from absl import logging
 import gin
 import jax
 import tensorflow.compat.v2 as tf
-from trax import backend
-from trax import trainer_lib
+from trax import fastmath
+from trax import trainer_flags  # pylint: disable=unused-import
+from trax.supervised import trainer_lib
 from trax.tf_numpy import numpy as tf_np
 
 FLAGS = flags.FLAGS
-
-flags.DEFINE_string('dataset', None, 'Which dataset to use.')
-flags.DEFINE_string('model', None, 'Which model to train.')
-flags.DEFINE_string('data_dir', None, 'Path to the directory with data.')
-flags.DEFINE_string('output_dir', None,
-                    'Path to the directory to save logs and checkpoints.')
-flags.DEFINE_multi_string('config_file', None,
-                          'Configuration file with parameters (.gin).')
-flags.DEFINE_multi_string('config', None,
-                          'Configuration parameters (gin string).')
-flags.DEFINE_integer('log_level', logging.INFO, 'Log level.')
-# TPU Flags
-flags.DEFINE_bool('use_tpu', False, "Whether we're running on TPU.")
-flags.DEFINE_string(
-    'jax_xla_backend', 'xla',
-    'Either "xla" for the XLA service directly, or "tpu_driver"'
-    'for a TPU Driver backend.')
-flags.DEFINE_string('jax_backend_target', 'local',
-                    'Either "local" or "rpc:address" to connect to a '
-                    'remote service target.')
-# TF Flags
-flags.DEFINE_bool('enable_eager_execution', True,
-                  "Whether we're running TF in eager mode.")
-flags.DEFINE_bool('tf_xla', True, 'Whether to turn on XLA for TF.')
-flags.DEFINE_bool('tf_opt_pin_to_host', False, 'Whether to turn on TF '
-                  'pin-to-host optimization.')
-flags.DEFINE_bool('tf_opt_layout', False, 'Whether to turn on TF layout '
-                  'optimization.')
-flags.DEFINE_bool('tf_xla_forced_compile', False, 'Use forced-compilation '
-                  'instead of auto-clustering for XLA. This flag only has '
-                  'effects when --tf_xla is on.')
-flags.DEFINE_bool('tf_allow_float64', False, 'Whether to allow float64 for TF.')
+Backend = fastmath.Backend
 
 
-def _default_output_dir():
-  """Default output directory."""
-  try:
-    dataset_name = gin.query_parameter('inputs.dataset_name')
-  except ValueError:
-    dataset_name = 'random'
-  dir_name = '{model_name}_{dataset_name}_{timestamp}'.format(
-      model_name=gin.query_parameter('train.model').configurable.name,
-      dataset_name=dataset_name,
-      timestamp=datetime.datetime.now().strftime('%Y%m%d_%H%M'),
-  )
-  dir_path = os.path.join('~', 'trax', dir_name)
-  print()
-  trainer_lib.log('No --output_dir specified')
-  return dir_path
+# TODO(afrozm): Share between trainer.py and rl_trainer.py
+def _tf_setup_from_flags():
+  """Processes TensorFlow-relevant flags."""
+  if FLAGS.enable_eager_execution:
+    tf.compat.v1.enable_eager_execution()
+  if FLAGS.tf_xla:
+    tf.config.optimizer.set_jit(True)
+    fastmath.tf_math.set_tf_xla_forced_compile(FLAGS.tf_xla_forced_compile)
+  tf.config.optimizer.set_experimental_options({
+      'pin_to_host_optimization': FLAGS.tf_opt_pin_to_host,
+      'layout_optimizer': FLAGS.tf_opt_layout,
+  })
+  tf_np.set_allow_float64(FLAGS.tf_allow_float64)
 
 
-def _setup_gin():
-  """Setup gin configuration."""
+# TODO(afrozm): Share between trainer.py and rl_trainer.py
+def _gin_parse_configs():
+  """Initializes gin-controlled bindings."""
   # Imports for configurables
   # pylint: disable=g-import-not-at-top,unused-import,g-bad-import-order,reimported,unused-variable
   from trax import models as _trax_models
   from trax import optimizers as _trax_opt
   # pylint: disable=g-import-not-at-top,unused-import,g-bad-import-order,reimported,unused-variable
 
-  configs = FLAGS.config or []
+  configs = FLAGS.config if FLAGS.config is not None else []
   # Override with --dataset and --model
   if FLAGS.dataset:
-    configs.append("inputs.dataset_name='%s'" % FLAGS.dataset)
-    if FLAGS.data_dir:
-      configs.append("inputs.data_dir='%s'" % FLAGS.data_dir)
+    configs.append("data_streams.dataset_name='%s'" % FLAGS.dataset)
+  if FLAGS.data_dir:
+    configs.append("data_streams.data_dir='%s'" % FLAGS.data_dir)
   if FLAGS.model:
     configs.append('train.model=@trax.models.%s' % FLAGS.model)
   gin.parse_config_files_and_bindings(FLAGS.config_file, configs)
 
 
-def set_tf_allow_float64(b):
-  tf_np.set_allow_float64(b)
+def _output_dir_or_default():
+  """Returns a path to the output directory."""
+  if FLAGS.output_dir:
+    output_dir = FLAGS.output_dir
+    trainer_lib.log('Using --output_dir {}'.format(output_dir))
+    return os.path.expanduser(output_dir)
+
+  # Else, generate a default output dir (under the user's home directory).
+  try:
+    dataset_name = gin.query_parameter('data_streams.dataset_name')
+  except ValueError:
+    dataset_name = 'random'
+  output_name = '{model_name}_{dataset_name}_{timestamp}'.format(
+      model_name=gin.query_parameter('train.model').configurable.name,
+      dataset_name=dataset_name,
+      timestamp=datetime.datetime.now().strftime('%Y%m%d_%H%M'),
+  )
+  output_dir = os.path.join('~', 'trax', output_name)
+  output_dir = os.path.expanduser(output_dir)
+  print()
+  trainer_lib.log('No --output_dir specified')
+  trainer_lib.log('Using default output_dir: {}'.format(output_dir))
+  return output_dir
+
+
+# TODO(afrozm): Share between trainer.py and rl_trainer.py
+def _jax_and_tf_configure_for_devices():  # pylint: disable=missing-function-docstring
+  jax.config.enable_omnistaging()
+  if FLAGS.use_tpu:
+    jax.config.update('jax_platform_name', 'tpu')
+    jax.config.update('jax_xla_backend', FLAGS.jax_xla_backend)
+    jax.config.update('jax_backend_target', FLAGS.jax_backend_target)
+  if (FLAGS.enable_eager_execution and (fastmath.is_backend(Backend.NUMPY) or
+                                        fastmath.is_backend(Backend.JAX))):
+    # Numpy backend doesn't benefit from having the input pipeline run on GPU,
+    # and jax backend has GPU memory contention if TF uses the GPU. Gin must be
+    # set up first before determining the backend.
+    tf.config.experimental.set_visible_devices([], 'GPU')
+
+
+def _train_using_tf(output_dir):
+  worker_cpu = tf_init_tpu()
+  with tf.device(worker_cpu):
+    if trainer_lib.num_devices() == 1:
+      # TF's device priority is GPU > CPU > TPU, so we need to explicitly make
+      # the TPU core the default device here.
+      with tf.device('/device:TPU:0'):
+        trainer_lib.train(output_dir=output_dir)
+    else:
+      trainer_lib.train(output_dir=output_dir)
 
 
 @gin.configurable
@@ -132,60 +149,22 @@ def tf_init_tpu(worker='', protocol=None):
 
 
 def main(_):
-
   logging.set_verbosity(FLAGS.log_level)
 
-  if FLAGS.enable_eager_execution:
-    tf.compat.v1.enable_eager_execution()
+  _tf_setup_from_flags()
+  _gin_parse_configs()
+  _jax_and_tf_configure_for_devices()
 
-  if FLAGS.tf_xla:
-    tf.config.optimizer.set_jit(True)
-    backend.set_tf_xla_forced_compile(FLAGS.tf_xla_forced_compile)
+  if FLAGS.disable_jit:
+    fastmath.disable_jit()
 
-  tf.config.optimizer.set_experimental_options(
-      {'pin_to_host_optimization': FLAGS.tf_opt_pin_to_host}
-  )
-
-  tf.config.optimizer.set_experimental_options(
-      {'layout_optimizer': FLAGS.tf_opt_layout}
-  )
-
-  set_tf_allow_float64(FLAGS.tf_allow_float64)
-
-  _setup_gin()
-
-  if FLAGS.enable_eager_execution and backend.get_name() in ('numpy', 'jax'):
-    # Numpy backend doesn't benefit from having the input pipeline run on GPU,
-    # and jax backend has GPU memory contention if TF uses the GPU. Gin must be
-    # set up first before determining the backend.
-    tf.config.experimental.set_visible_devices([], 'GPU')
-
-  # Setup output directory
-  output_dir = FLAGS.output_dir or _default_output_dir()
-  trainer_lib.log('Using --output_dir %s' % output_dir)
-  output_dir = os.path.expanduser(output_dir)
-
-  # If on TPU, let JAX know.
-  if FLAGS.use_tpu:
-    jax.config.update('jax_platform_name', 'tpu')
-    jax.config.update('jax_xla_backend', FLAGS.jax_xla_backend)
-    jax.config.update('jax_backend_target', FLAGS.jax_backend_target)
-
-  if FLAGS.use_tpu and backend.get_name() == 'tf':
-    worker_cpu = tf_init_tpu()
-    with tf.device(worker_cpu):
-      if trainer_lib.num_devices() == 1:
-        # TF's device priority is GPU > CPU > TPU, so we need to explicitly make
-        # the TPU core the default device here.
-        with tf.device('/device:TPU:0'):
-          trainer_lib.train(output_dir=output_dir)
-      else:
-        trainer_lib.train(output_dir=output_dir)
+  output_dir = _output_dir_or_default()
+  if FLAGS.use_tpu and fastmath.is_backend(Backend.TFNP):
+    _train_using_tf(output_dir)
   else:
     trainer_lib.train(output_dir=output_dir)
 
   trainer_lib.log('Finished training.')
-
 
 
 if __name__ == '__main__':

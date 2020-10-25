@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,25 +14,21 @@
 # limitations under the License.
 
 """Models defined in trax."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import gin
-import six
 
 from trax.models import atari_cnn
 from trax.models import mlp
 from trax.models import neural_gpu
 from trax.models import resnet
+from trax.models import rl
 from trax.models import rnn
 from trax.models import transformer
-from trax.models.research import reformer
-from trax.models.research import skipping_transformer
-
-if six.PY3:
-  # uses @ notation:
-  from trax.models.research import position_lookup_transformer  # pylint: disable=g-import-not-at-top
+from trax.models.reformer import reformer
+from trax.models.research import bert
+from trax.models.research import configurable_transformer
+from trax.models.research import layerdrop_transformer
+from trax.models.research import rezero
+from trax.models.research import transformer2
 
 
 # Ginify
@@ -43,22 +39,50 @@ def model_configure(*args, **kwargs):
 
 # pylint: disable=invalid-name
 AtariCnn = model_configure(atari_cnn.AtariCnn)
+AtariCnnBody = model_configure(atari_cnn.AtariCnnBody)
 FrameStackMLP = model_configure(atari_cnn.FrameStackMLP)
+BERT = model_configure(bert.BERT)
+BERTClassifierHead = model_configure(bert.BERTClassifierHead)
+BERTRegressionHead = model_configure(bert.BERTRegressionHead)
+ConfigurableTransformer = model_configure(
+    configurable_transformer.ConfigurableTransformer)
+ConfigurableTransformerEncoder = model_configure(
+    configurable_transformer.ConfigurableTransformerEncoder)
+ConfigurableTransformerLM = model_configure(
+    configurable_transformer.ConfigurableTransformerLM)
 MLP = model_configure(mlp.MLP)
+PureMLP = model_configure(mlp.PureMLP)
 NeuralGPU = model_configure(neural_gpu.NeuralGPU)
+Reformer = model_configure(reformer.Reformer)
 ReformerLM = model_configure(reformer.ReformerLM)
 ReformerShortenLM = model_configure(reformer.ReformerShortenLM)
+Reformer2 = model_configure(reformer.Reformer2)
 Resnet50 = model_configure(resnet.Resnet50)
+ReZeroTransformer = model_configure(
+    rezero.ReZeroTransformer)
+ReZeroTransformerDecoder = model_configure(
+    rezero.ReZeroTransformerDecoder)
+ReZeroTransformerEncoder = model_configure(
+    rezero.ReZeroTransformerEncoder)
+ReZeroTransformerLM = model_configure(
+    rezero.ReZeroTransformerLM)
 SkippingTransformerLM = model_configure(
-    skipping_transformer.SkippingTransformerLM)
+    layerdrop_transformer.SkippingTransformerLM)
+LayerDropTransformerLM = model_configure(
+    layerdrop_transformer.LayerDropTransformerLM)
+EveryOtherLayerDropTransformerLM = model_configure(
+    layerdrop_transformer.EveryOtherLayerDropTransformerLM)
 Transformer = model_configure(transformer.Transformer)
 TransformerDecoder = model_configure(transformer.TransformerDecoder)
 TransformerEncoder = model_configure(transformer.TransformerEncoder)
 TransformerLM = model_configure(transformer.TransformerLM)
+Transformer2 = model_configure(
+    transformer2.Transformer2)
 WideResnet = model_configure(resnet.WideResnet)
+Policy = model_configure(rl.Policy)
+PolicyAndValue = model_configure(rl.PolicyAndValue)
+Value = model_configure(rl.Value)
+Quality = model_configure(rl.Quality)
 RNNLM = model_configure(rnn.RNNLM)
-
-
-if six.PY3:
-  PositionLookupTransformerLM = model_configure(
-      position_lookup_transformer.PositionLookupTransformerLM)
+GRULM = model_configure(rnn.GRULM)
+LSTMSeq2SeqAttn = model_configure(rnn.LSTMSeq2SeqAttn)

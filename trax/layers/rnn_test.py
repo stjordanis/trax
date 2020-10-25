@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,47 +13,62 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Tests for rnn layers."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import absltest
-from trax.layers import base
-from trax.layers import rnn
-from trax.shapes import ShapeDtype
+from absl.testing import parameterized
+import numpy as np
+
+from trax import fastmath
+from trax import shapes
+import trax.layers as tl
 
 
-class RnnLayerTest(absltest.TestCase):
+@parameterized.named_parameters(
+    ('_' + b.value, b) for b in (fastmath.Backend.JAX, fastmath.Backend.TFNP))
+class RnnTest(parameterized.TestCase):
 
-  def _test_cell_runs(self, layer, input_signature, output_shape):
-    final_shape = base.check_shape_agreement(layer, input_signature)
-    self.assertEqual(output_shape, final_shape)
+  def test_conv_gru_cell(self, backend):
+    with fastmath.use_backend(backend):
+      layer = tl.ConvGRUCell(9, kernel_size=(3, 3))
+      x = np.ones((8, 1, 7, 9))
+      _, _ = layer.init(shapes.signature(x))
+      y = layer(x)
+      self.assertEqual(y.shape, x.shape)
 
-  def test_conv_gru_cell(self):
-    self._test_cell_runs(
-        rnn.ConvGRUCell(9, kernel_size=(3, 3)),
-        input_signature=ShapeDtype((8, 1, 7, 9)),
-        output_shape=(8, 1, 7, 9))
+  def test_gru_cell(self, backend):
+    with fastmath.use_backend(backend):
+      layer = tl.GRUCell(9)
+      xs = [np.ones((8, 7, 9)), np.ones((8, 7, 9))]
+      _, _ = layer.init(shapes.signature(xs))
+      ys = layer(xs)
+      self.assertEqual([y.shape for y in ys], [(8, 7, 9), (8, 7, 9)])
 
-  def test_gru_cell(self):
-    self._test_cell_runs(
-        rnn.GRUCell(9),
-        input_signature=(ShapeDtype((8, 7, 9)), ShapeDtype((8, 7, 9))),
-        output_shape=((8, 7, 9), (8, 7, 9)))
+  def test_lstm_cell(self, backend):
+    with fastmath.use_backend(backend):
+      layer = tl.LSTMCell(9)
+      xs = [np.ones((8, 9)), np.ones((8, 18))]
+      _, _ = layer.init(shapes.signature(xs))
+      ys = layer(xs)
+      self.assertEqual([y.shape for y in ys], [(8, 9), (8, 18)])
 
-  def test_lstm_cell(self):
-    self._test_cell_runs(
-        rnn.LSTMCell(9),
-        input_signature=(ShapeDtype((8, 9)), ShapeDtype((8, 18))),
-        output_shape=((8, 9), (8, 18)))
+  def test_sru(self, backend):
+    with fastmath.use_backend(backend):
+      layer = tl.SRU(7)
+      x = np.ones((8, 9, 7), np.float32)
+      _, _ = layer.init(shapes.signature(x))
+      y = layer(x)
+      self.assertEqual(y.shape, x.shape)
 
-  def test_sru(self):
-    self._test_cell_runs(
-        rnn.SRU(7),
-        input_signature=ShapeDtype((8, 9, 7)),
-        output_shape=(8, 9, 7))
+  def test_names(self, backend):
+    with fastmath.use_backend(backend):
+      layer = tl.LSTM(3)
+      self.assertEqual('LSTM_3', str(layer))
+      layer = tl.GRU(5)
+      self.assertEqual('GRU_5', str(layer))
+      layer = tl.SRU(7)
+      self.assertEqual('SRU_7', str(layer))
 
 
 if __name__ == '__main__':

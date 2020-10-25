@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,127 +13,190 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Trax base optimizer class."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
-from trax.backend import numpy as np
-from trax.layers import base as layers
-
-
-def tree_flatten(tree):
-  """Flatten a tree into a list."""
-  if isinstance(tree, (list, tuple)):
-    # In python, sum of lists starting from [] is the concatenation.
-    return sum([tree_flatten(t) for t in tree], [])
-  if isinstance(tree, dict):
-    # Only use the values in case of a dictionary node.
-    return sum([tree_flatten(v) for v in tree.values()], [])
-  return [tree]
-
-
-def tree_unflatten(flat, tree):
-  """Unflatten a list into a tree given the tree shape as second argument.
-
-  Args:
-    flat: a flat list of elements to be assembled into a tree.
-    tree: a tree with the structure we want to have in the new tree.
-
-  Returns:
-    A pair (new_tree, rest_of_flat) where the new tree that has the structure
-    of tree but with leaves from flat, and the remaining elements of flat if
-    more were provided than the number of leaves of tree (useful for recursion).
-  """
-  if isinstance(tree, (list, tuple)):
-    new_tree, rest = [], flat
-    for t in tree:
-      new_t, rest = tree_unflatten(rest, t)
-      new_tree.append(new_t)
-    new_tree = tuple(new_tree) if isinstance(tree, tuple) else new_tree
-    return new_tree, rest
-  if isinstance(tree, dict):
-    new_tree, rest = {}, flat
-    for k in tree:
-      new_v, rest = tree_unflatten(rest, tree[k])
-      new_tree[k] = new_v
-    return new_tree, rest
-  return flat[0], flat[1:]
+from trax import fastmath
+from trax.fastmath import numpy as jnp
 
 
 class Optimizer(object):
-  """Optimizer object, base class. Maps per-parameter functions to trees."""
+  """Base class for optimizers that work hand in hand with Trax layers.
 
-  def __init__(self, learning_rate, **init_opt_params):
-    """Initialize the optimizer.
+  To define an optimizer subclass, specify its behavior with respect to a
+  single level/node in the network (e.g., a single dense layer):
 
-    Takes the initial optimizer parameters as positional arguments. They are fed
-    back to the optimizer in tree_update, in the same order. They can be changed
-    between updates, e.g. for learning rate schedules.
+    - `init`: how to create/initialize optimizer-internal weights ("slots")
+        whose shape matches the node's weight shape.
+    - `update`: how to use gradient information to update node weights and
+        optimizer slots.
 
-    The constructor should be overridden in derived classes to give names to the
-    optimizer parameters, so the gin configuration can set them.
+  The Trax runtime combines these node-local computations into weight updates
+  and slot updates for the whole tree of layers in the model.
+  """
+
+  def __init__(self, learning_rate=0.01, clip_grad_norm=None,
+               **init_opt_params):
+    """Sets initial hyperparameter values for this optimizer.
+
+    Takes initial optimizer parameters as keyword arguments. These values can
+    be changed between training steps, e.g., for learning rate schedules.
+
+    If you want your subclass to expose hyperparameters for gin configuration,
+    override this constructor and use explicitly named keyword arguments. See
+    `momentum.Momentum.__init__` for one such example.
 
     Args:
       learning_rate: The initial learning rate.
+      clip_grad_norm: float; the value to which gradients will be clipped.
       **init_opt_params: Initial values of any additional optimizer parameters.
     """
     init_opt_params['learning_rate'] = learning_rate
     self._init_opt_params = {
-        name: np.array(value) for (name, value) in init_opt_params.items()
+        name: jnp.array(value) for (name, value) in init_opt_params.items()
     }
+    self._slots = None
+    # Gradient clipping happens with respect to the norm of the whole gradient
+    # tree, so it is not passed to single-slot updates, but done in this class
+    # for the whole gradient tree.
+    self._clip_grad_norm = clip_grad_norm
 
-  def init(self, params):
-    """Create optimizer slots for the given parameters."""
-    raise NotImplementedError
-
-  def update(self, step, grads, params, slots, opt_params):
-    """Update a single parameter array.
+  def init(self, weights):
+    """Creates optimizer slots for the given parameters.
 
     Args:
-      step: Current step.
-      grads: Gradients.
-      params: Parameters.
-      slots: Optimizer slots (e.g. gradient moments).
-      opt_params: Optimizer (hyper)parameters (e.g. learning rate, momentum).
-
-    Returns:
-      (new_params, new_slots)
+      weights: Trainable weights for one layer. Optimizer slots typically match
+          the data shape and type of the given layer weights.
     """
     raise NotImplementedError
 
-  # End subclass interface.
+  def update(self, step, grads, weights, slots, opt_params):
+    """Computes one step's worth of updates.
 
-  def tree_init(self, param_tree):
+    The update computes both new weights for the layer/node and new slot values
+    for the optimizer.
+
+    Args:
+      step: Current step number in the training process.
+      grads: Gradients for the weights of the sublayer.
+      weights: Current weights for the sublayer.
+      slots: Optimizer slots.
+      opt_params: Optimizer hyperparameters (e.g. learning rate, momentum).
+
+    Returns:
+      Tuple of (new_weights, new_slots).
+    """
+    raise NotImplementedError
+
+  @property
+  def slots(self):
+    return self._slots
+
+  @slots.setter
+  def slots(self, slots):
+    self._slots = slots
+
+  @property
+  def opt_params(self):
+    return self._init_opt_params
+
+  @opt_params.setter
+  def opt_params(self, opt_params):
+    self._init_opt_params = opt_params
+
+  def tree_init(self, weight_tree):
+    """Assembles node-local initializations into full-tree initialization.
+
+    Args:
+      weight_tree: Weights for an entire model, in a tree that matches the
+          model's layer structure.
+
+    Returns:
+      Tuple `(slots, opt_params)`, where `slots` are the initialized optimizer
+      slot values and `opt_params` are optimizer hyperparameters (e.g.,
+      learning rate, momentum).
+    """
+    self._slots = [self.init(weight)
+                   for weight in fastmath.tree_flatten(weight_tree)]
     return (
-        [self.init(param) for param in tree_flatten(param_tree)],
+        self._slots,
         self._init_opt_params,
     )
 
-  def _update_and_check(self, step, grads, params, slots, opt_params):
-    """Update a single parameter array and check types."""
-    new_params, new_slots = self.update(
-        step, grads, params, slots, opt_params)
-    if isinstance(params, np.ndarray):
-      assert isinstance(new_params, np.ndarray), (
-          'The type of the new parameter values should be np.ndarray; got %s' %
-          type(new_params))
-      assert new_params.dtype == params.dtype, (
-          'The dtype of the new parameter values (%s) is not the same as the '
-          'old one (%s)' % (new_params.dtype, params.dtype))
-    return new_params, new_slots
+  def tree_update(self, step, grad_tree, weight_tree, slots, opt_params):
+    """Assembles node-local weight and slot updates for the full layer tree.
 
-  def tree_update(self, step, grad_tree, param_tree, slots, opt_params):
-    grads_flat = tree_flatten(grad_tree)
-    params_flat = tree_flatten(param_tree)
+    Args:
+      step: Current step number in the training process.
+      grad_tree: Gradients for the entire model, in a tree that matches the
+          model's layer structure.
+      weight_tree: Current weights for the entire model, in a tree that matches
+          the model's layer structure.
+      slots: Optimizer slots.
+      opt_params: Optimizer hyperparameters (e.g. learning rate, momentum).
+
+    Returns:
+      Tuple `(weights, slots)`, where `weights` are the optimizer-updated
+      weights for the whole model (in a tree matching the model's layer
+      structure) and `slots` are the updated optimizer slot values.
+    """
+    grads_flat = fastmath.tree_flatten(grad_tree)
+    grads_norm = self._l2_norm(grads_flat)
+    if self._clip_grad_norm is not None:
+      max_norm = self._clip_grad_norm
+      grads_flat = [jnp.where(grads_norm < max_norm,  # pylint: disable=g-complex-comprehension
+                              g,
+                              g * (max_norm / grads_norm))
+                    for g in grads_flat]
+    weights_flat = fastmath.tree_flatten(weight_tree)
+    weights_norm = self._l2_norm(weights_flat)
     updated_pairs = [
-        self._update_and_check(step, grad, param, slot, opt_params)
-        for (grad, param, slot) in zip(grads_flat, params_flat, slots)
+        self._update_and_check(step, grad, weight, slot, opt_params)
+        for (grad, weight, slot) in zip(grads_flat, weights_flat, slots)
     ]
-    new_params_flat, new_slots = zip(*updated_pairs)
-    new_params, _ = tree_unflatten(new_params_flat, param_tree)
-    return new_params, new_slots
+    new_weights_flat, self.slots = zip(*updated_pairs)
+    new_weights, _ = fastmath.tree_unflatten(new_weights_flat, weight_tree)
+    metrics = {'gradients_l2': grads_norm, 'weights_l2': weights_norm}
+    return new_weights, self.slots, metrics
+
+  def _l2_norm(self, flat_list):
+    """Returns the aggregate L2 norm of a list of tensors."""
+    if fastmath.is_backend(fastmath.Backend.JAX):
+      norm = jnp.sqrt(sum(jnp.vdot(x, x) for x in flat_list))
+    else:  # TODO(lukaszkaiser): add vdot to TF-numpy
+      norm = jnp.sqrt(sum(jnp.sum(x*x) for x in flat_list))
+    return norm
+
+  def _update_and_check(self, step, grads, weights, slots, opt_params):
+    """Updates a single weight array and checks types."""
+    new_weights, new_slots = self.update(
+        step, grads, weights, slots, opt_params)
+    if isinstance(weights, jnp.ndarray):
+      if not isinstance(new_weights, jnp.ndarray):
+        raise ValueError(
+            f'New weight values should be of type jnp.ndarray or a subclass; '
+            f'instead got {type(new_weights)}.')
+      if new_weights.dtype != weights.dtype:
+        raise ValueError(
+            f'New weight values dtype ({new_weights.dtype}) does not match '
+            f'the old one ({weights.dtype}).')
+    return new_weights, new_slots
+
+
+class SGD(Optimizer):
+  """Stochastic gradient descent (SGD) optimizer.
+
+  A simple optimizer with no weights ("slots") of its own.
+  """
+
+  def init(self, weights):
+    return None
+
+  def update(self, step, grads, weights, slots, opt_params):
+    del step, slots
+    lr = opt_params['learning_rate']
+    new_weights = weights - (lr * grads).astype(weights.dtype)
+    return new_weights, None
 
 
 # Utilities.
@@ -141,301 +204,12 @@ class Optimizer(object):
 
 def l2_norm(tree):
   """Compute the l2 norm of a pytree of arrays. Useful for weight decay."""
-  leaves = tree_flatten(tree)
-  return np.sqrt(sum(np.vdot(x, x) for x in leaves))
+  leaves = fastmath.tree_flatten(tree)
+  return jnp.sqrt(sum(jnp.vdot(x, x) for x in leaves))
 
 
 def clip_grads(grad_tree, max_norm):
   """Clip gradients stored as a pytree of arrays to maximum norm `max_norm`."""
   norm = l2_norm(grad_tree)
-  normalize = lambda g: np.where(norm < max_norm, g, g * (max_norm / norm))
-  return layers.nested_map(grad_tree, normalize)
-
-
-# Optimizers.
-
-
-class SGD(Optimizer):
-  """Plain SGD optimizer."""
-
-  def init(self, params):
-    return None
-
-  def update(self, step, grads, params, slots, opt_params):
-    del step
-    del slots
-    learning_rate = opt_params['learning_rate']
-    return params - (learning_rate * grads).astype(params.dtype), None
-
-
-class RMSProp(Optimizer):
-  """RMSProp optimizer."""
-
-  def __init__(self, learning_rate, gamma=0.9, eps=1e-8):  # pylint: disable=useless-super-delegation
-    super(RMSProp, self).__init__(
-        learning_rate=learning_rate,
-        gamma=gamma,
-        eps=eps,
-    )
-
-  def init(self, params):
-    return np.ones_like(params)
-
-  def update(self, step, grads, params, avg_sq_grad, opt_params):
-    del step
-    learning_rate = opt_params['learning_rate']
-    gamma = opt_params['gamma']
-    eps = opt_params['eps']
-    avg_sq_grad = avg_sq_grad * gamma + grads**2 * (1. - gamma)
-    params = params - (learning_rate * grads /
-                       (np.sqrt(avg_sq_grad) + eps)).astype(params.dtype)
-    return params, avg_sq_grad
-
-
-class Adam(Optimizer):
-  """Adam optimizer."""
-
-  def __init__(self, learning_rate, weight_decay_rate=1e-5,  # pylint: disable=useless-super-delegation
-               b1=0.9, b2=0.999, eps=1e-5):
-    """Create the Adam optimizer.
-
-    Args:
-      learning_rate: a postitive scalar value for the initial learning rate.
-      weight_decay_rate: rate at which to decay weights.
-      b1: optional, a positive scalar value for beta_1, the exponential decay
-        rate for the first moment estimates (default 0.9).
-      b2: optional, a positive scalar value for beta_2, the exponential decay
-         rate for the second moment estimates (default 0.999).
-      eps: optional, a positive scalar value for epsilon, a small constant for
-        numerical stability (default 1e-8).
-    """
-    super(Adam, self).__init__(
-        learning_rate=learning_rate,
-        weight_decay_rate=weight_decay_rate,
-        b1=b1,
-        b2=b2,
-        eps=eps,
-    )
-
-  def init(self, params):
-    m = np.zeros_like(params)
-    v = np.zeros_like(params)
-    return m, v
-
-  def update(self, step, grads, params, slots, opt_params):
-    m, v = slots
-    learning_rate = opt_params['learning_rate']
-    weight_decay_rate = opt_params['weight_decay_rate']
-    b1 = opt_params['b1']
-    b2 = opt_params['b2']
-    eps = opt_params['eps']
-    m = (1 - b1) * grads + b1 * m  # First  moment estimate.
-    v = (1 - b2) * (grads ** 2) + b2 * v  # Second moment estimate.
-    mhat = m / (1 - b1 ** (step + 1))  # Bias correction.
-    vhat = v / (1 - b2 ** (step + 1))
-    params = (1 - weight_decay_rate) * params - (
-        learning_rate * mhat / (np.sqrt(vhat) + eps)).astype(params.dtype)
-    return params, (m, v)
-
-
-class Adafactor(Optimizer):
-  """Adafactor optimizer."""
-
-  def __init__(self,
-               learning_rate,
-               factored=True,
-               multiply_by_parameter_scale=True,
-               do_clipping=True,
-               do_momentum=False,
-               beta1=0.0,
-               decay_rate=0.8,
-               clipping_threshold=1.0,
-               weight_decay_rate=1e-5,
-               epsilon1=1e-30,
-               epsilon2=1e-3):
-    """Create the Adafactor optimizer.
-
-    Adafactor is described in https://arxiv.org/abs/1804.04235.
-
-    Args:
-      learning_rate: float: trax-provided learning rate.
-      factored: boolean: whether to use factored second-moment estimator for 2d
-        variables.
-      multiply_by_parameter_scale: boolean: if True, then scale provided
-        learning_rate by parameter norm. if False, provided learning_rate is
-        absolute step size.
-      do_clipping: whether to clip gradients; if True, set clipping_theshold.
-      do_momentum: whether to use momentum; if True, set beta1.
-      beta1: a float value between 0 and 1, enables momentum and uses extra
-        memory if nonzero!  Off by default.
-      decay_rate: float: controls second-moment exponential decay schedule.
-      clipping_threshold: an optional float >= 1, if None no update clipping.
-      weight_decay_rate: rate at which to decay weights.
-      epsilon1: Regularization constant for squared gradient.
-      epsilon2: Regularization constant for parameter scale.
-    """
-    # These 4 parameters are not configurable once the class is created.
-    self._factored = factored
-    self._multiply_by_parameter_scale = multiply_by_parameter_scale
-    self._do_clipping = do_clipping
-    self._do_momentum = do_momentum
-    # Dynamically configurable parameters will be passed to the update function.
-    super(Adafactor, self).__init__(
-        learning_rate=learning_rate,
-        beta1=beta1,
-        decay_rate=decay_rate,
-        clipping_threshold=clipping_threshold,
-        weight_decay_rate=weight_decay_rate,
-        epsilon1=epsilon1,
-        epsilon2=epsilon2,
-    )
-
-  @staticmethod
-  def _decay_rate_pow(i, exponent=0.8):
-    """Default Adafactor second-moment decay schedule."""
-    t = np.array(i, np.float32) + 1.0
-    return 1.0 - t**(-exponent)
-
-  def init(self, params):
-    shape = params.shape
-    slots = []
-    if self._factored and len(shape) >= 2:
-      v_row = np.zeros(shape[:-1], dtype=np.float32)
-      v_col = np.zeros(shape[:-2] + shape[-1:], dtype=np.float32)
-      slots.extend([v_row, v_col])
-    else:
-      v = np.zeros_like(params)
-      slots.append(v)
-    if self._do_momentum:
-      m = np.zeros_like(params)
-      slots.append(m)
-    return slots
-
-  def update(self, step, grads, params, slots, opt_params):
-    updates = []
-    learning_rate = opt_params['learning_rate']
-    beta1 = opt_params['beta1']
-    decay_rate = opt_params['decay_rate']
-    clipping_threshold = opt_params['clipping_threshold']
-    weight_decay_rate = opt_params['weight_decay_rate']
-    epsilon1 = opt_params['epsilon1']
-    epsilon2 = opt_params['epsilon2']
-    decay_rate = self._decay_rate_pow(step, exponent=decay_rate)
-    update_scale = learning_rate
-    if self._multiply_by_parameter_scale:
-      update_scale *= np.maximum(
-          np.sqrt(np.mean(params * params)), epsilon2)
-    mixing_rate = 1.0 - decay_rate
-
-    grads_sqr = grads * grads + epsilon1
-    if self._factored and len(params.shape) >= 2:
-      v_row = slots.pop(0)
-      v_col = slots.pop(0)
-      new_v_row = decay_rate * v_row + mixing_rate * np.mean(grads_sqr, axis=-1)
-      new_v_col = decay_rate * v_col + mixing_rate * np.mean(grads_sqr, axis=-2)
-      updates.extend([new_v_row, new_v_col])
-      row_col_mean = np.mean(new_v_row, axis=-1, keepdims=True)
-      row_factor = (new_v_row / row_col_mean)**-0.5
-      col_factor = (new_v_col)**-0.5
-      y = (
-          grads * np.expand_dims(row_factor, axis=-1) *
-          np.expand_dims(col_factor, axis=-2))
-    else:
-      v = slots.pop(0)
-      new_v = decay_rate * v + mixing_rate * grads_sqr
-      updates.append(new_v)
-      y = grads * (new_v)**-0.5
-
-    if self._do_clipping:
-      clipping_denom = (
-          np.maximum(1.0, np.sqrt(np.mean(y * y)) / clipping_threshold))
-      y /= clipping_denom
-
-    subtrahend = update_scale * y
-    if self._do_momentum:
-      m = slots.pop(0)
-      new_m = beta1 * m + (1.0 - beta1) * subtrahend
-      subtrahend = new_m
-      updates.append(new_m)
-
-    new_params = (1 - weight_decay_rate) * params - subtrahend
-    # TODO(lukaszkaiser): why is the astype needed here? Check and correct.
-    return new_params.astype(params.dtype), updates
-
-
-class SM3(Optimizer):
-  """SM3 optimizer."""
-
-  def __init__(self, learning_rate, momentum=0.9):  # pylint: disable=useless-super-delegation
-    """Create the SM3 optimizer.
-
-    Memory-Efficient Adaptive Optimization for Large-Scale Learning.
-    https://arxiv.org/abs/1901.11150
-
-    Args:
-      learning_rate: a postitive scalar value for the initial learning rate.
-      momentum: optional, a positive scalar value for momentum
-    """
-    super(SM3, self).__init__(
-        learning_rate=learning_rate,
-        momentum=momentum,
-    )
-
-  def init(self, params):
-    vs = [np.zeros(sz, dtype=params.dtype) for sz in params.shape]
-    return (np.zeros_like(params), vs)
-
-  def _update_diagonal(self, grads, params, m, v, opt_params):
-    learning_rate = opt_params['learning_rate']
-    momentum = opt_params['momentum']
-    v[0] += grads * grads
-    preconditioner = np.where(v[0] > 0, 1.0 / np.sqrt(v[0]),
-                              np.zeros_like(v[0]))
-    preconditioned_grads = preconditioner * grads
-    m = (1 - momentum) * preconditioned_grads + momentum * m
-    params = params - (learning_rate * m).astype(params.dtype)
-    return params, (m, v)
-
-  def _expanded_shape(self, shape, axis):
-    # Replaces a `shape` of [M, N, K] with 1 in all dimensions except for i.
-    # For eg: i = 1 returns [1, N, 1].
-    rank = len(shape)
-    return [1] * axis + [shape[axis]] + [1] * (rank - axis - 1)
-
-  def _minimum(self, tensor_list):
-    minimum = tensor_list[0]
-    for i in range(1, len(tensor_list)):
-      minimum = np.minimum(minimum, tensor_list[i])
-    return minimum
-
-  def _update_sketched(self, grads, params, m, v, opt_params):
-    """Update for higher-rank parameters."""
-    learning_rate = opt_params['learning_rate']
-    momentum = opt_params['momentum']
-    shape = params.shape
-    rank = len(shape)
-    reshaped_accumulators = [np.reshape(v[i], self._expanded_shape(shape, i))
-                             for i in range(rank)]
-    current_accumulator = self._minimum(reshaped_accumulators)
-    current_accumulator += grads * grads
-    accumulator_inv_sqrt = np.where(current_accumulator > 0.0,
-                                    1.0 / np.sqrt(current_accumulator),
-                                    np.zeros_like(current_accumulator))
-    preconditioned_gradient = grads * accumulator_inv_sqrt
-    m = (1.0 - momentum) * preconditioned_gradient + momentum * m
-    params = params - (learning_rate * m).astype(params.dtype)
-    for i in range(len(v)):
-      axes = list(range(int(i))) + list(range(int(i) + 1, rank))
-      dim_accumulator = np.amax(current_accumulator, axis=axes)
-      v[i] = dim_accumulator
-    return params, (m, v)
-
-  def update(self, step, grads, params, slots, opt_params):
-    del step
-    m, v = slots
-    shape = params.shape
-    rank = len(shape)
-    if rank > 1:
-      return self._update_sketched(grads, params, m, v, opt_params)
-    else:
-      return self._update_diagonal(grads, params, m, v, opt_params)
+  normalize = lambda g: jnp.where(norm < max_norm, g, g * (max_norm / norm))
+  return fastmath.nested_map(grad_tree, normalize)

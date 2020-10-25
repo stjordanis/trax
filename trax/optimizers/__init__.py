@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,15 +13,20 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-"""Optimizers defined in trax."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
+# Lint as: python3
+"""Optimizers for use with Trax layers."""
 
 import gin
 
+from trax.optimizers import adafactor
+from trax.optimizers import adam
 from trax.optimizers import base
 from trax.optimizers import momentum
+from trax.optimizers import rms_prop
+from trax.optimizers import sm3
+from trax.optimizers import trainer
+from trax.optimizers.trainer import ReversibleSerialTrainer
+from trax.optimizers.trainer import Trainer
 
 
 def opt_configure(*args, **kwargs):
@@ -32,7 +37,7 @@ def opt_configure(*args, **kwargs):
 # pylint: disable=invalid-name
 SGD = opt_configure(base.SGD)
 Momentum = opt_configure(momentum.Momentum)
-RMSProp = opt_configure(base.RMSProp)
-Adam = opt_configure(base.Adam)
-Adafactor = opt_configure(base.Adafactor)
-SM3 = opt_configure(base.SM3)
+RMSProp = opt_configure(rms_prop.RMSProp)
+Adam = opt_configure(adam.Adam)
+Adafactor = opt_configure(adafactor.Adafactor)
+SM3 = opt_configure(sm3.SM3)

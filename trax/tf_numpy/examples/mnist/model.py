@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -111,6 +111,7 @@ class Model(object):
       g.watch(wb_tensors)
       loss = mean_squared_error(self.forward(x), y)
     gradients = g.gradient(loss.data, wb_tensors)
+    gradients = [np.asarray(grad) for grad in gradients]
 
     new_weights_and_biases = []
     for v, dv in zip(self.weights + self.biases, gradients):

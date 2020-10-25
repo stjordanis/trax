@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,27 +13,46 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Tests for RNNs."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 from absl.testing import absltest
-from trax import backend
-from trax import layers as tl
+from absl.testing import parameterized
+import numpy as np
+
+from trax import fastmath
+from trax import shapes
 from trax.models import rnn
-from trax.shapes import ShapeDtype
 
 
-class RNNTest(absltest.TestCase):
+@parameterized.named_parameters(
+    ('_' + b.value, b) for b in (fastmath.Backend.JAX, fastmath.Backend.TFNP))
+class RNNTest(parameterized.TestCase):
 
-  def test_rnnlm_forward_shape(self):
-    """Runs the RNN LM forward and checks output shape."""
-    input_signature = ShapeDtype((3, 28), dtype=backend.numpy.int32)
-    model = rnn.RNNLM(vocab_size=20, d_model=16)
-    final_shape = tl.check_shape_agreement(model, input_signature)
-    self.assertEqual((3, 28, 20), final_shape)
+  def test_rnnlm_forward_shape(self, backend):
+    with fastmath.use_backend(backend):
+      model = rnn.RNNLM(vocab_size=20, d_model=16)
+      x = np.ones((3, 28)).astype(np.int32)
+      _, _ = model.init(shapes.signature(x))
+      y = model(x)
+      self.assertEqual(y.shape, (3, 28, 20))
+
+  def test_grulm_forward_shape(self, backend):
+    with fastmath.use_backend(backend):
+      model = rnn.GRULM(vocab_size=20, d_model=16)
+      x = np.ones((3, 28)).astype(np.int32)
+      _, _ = model.init(shapes.signature(x))
+      y = model(x)
+      self.assertEqual(y.shape, (3, 28, 20))
+
+  def test_lstmseq2seqattn_forward_shape(self, backend):
+    with fastmath.use_backend(backend):
+      model = rnn.LSTMSeq2SeqAttn(
+          input_vocab_size=20, target_vocab_size=20, d_model=16)
+      x = np.ones((3, 28)).astype(np.int32)
+      _, _ = model.init([shapes.signature(x), shapes.signature(x)])
+      ys = model([x, x])
+      self.assertEqual([y.shape for y in ys], [(3, 28, 20), (3, 28)])
 
 
 if __name__ == '__main__':

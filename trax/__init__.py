@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,10 +15,12 @@
 
 """Trax top level import."""
 
-from trax import backend as math
-from trax import inputs
+from trax import data
+from trax import fastmath
 from trax import layers
-from trax import learning_rate as lr
+from trax import models
 from trax import optimizers
 from trax import shapes
-from trax import trainer_lib as supervised
+from trax import supervised
+from trax.supervised import lr_schedules as lr
+from trax.trax2keras import AsKeras

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,77 +13,196 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# Lint as: python3
 """Tests for metrics layers."""
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
 
 from absl.testing import absltest
-import numpy as onp
-from trax.layers import base
+import numpy as np
+
+from trax import shapes
+import trax.layers as tl
 from trax.layers import metrics
-from trax.shapes import ShapeDtype
-from trax.shapes import signature
 
 
-class MetricsLayerTest(absltest.TestCase):
+class MetricsTest(absltest.TestCase):
 
   def test_cross_entropy(self):
-    input_signature = (ShapeDtype((29, 4, 4, 20)), ShapeDtype((29, 4, 4)))
-    result_shape = base.check_shape_agreement(
-        metrics.CrossEntropy(), input_signature)
-    self.assertEqual(result_shape, (29, 4, 4))
+    layer = metrics._CrossEntropy()
+    xs = [np.ones((9, 4, 4, 20)),
+          np.ones((9, 4, 4))]
+    y = layer(xs)
+    self.assertEqual(y.shape, (9, 4, 4))
 
   def test_accuracy(self):
-    input_signature = (ShapeDtype((29, 4, 4, 20)), ShapeDtype((29, 4, 4)))
-    result_shape = base.check_shape_agreement(
-        metrics.Accuracy(), input_signature)
-    self.assertEqual(result_shape, (29, 4, 4))
-
-  def test_weight_mask(self):
-    input_signature = ShapeDtype((29, 4, 4, 20))
-    result_shape = base.check_shape_agreement(
-        metrics.WeightMask(), input_signature)
-    self.assertEqual(result_shape, (29, 4, 4, 20))
+    layer = metrics._Accuracy()
+    xs = [np.ones((9, 4, 4)),
+          np.ones((9, 4, 4))]
+    y = layer(xs)
+    self.assertEqual(y.shape, (9, 4, 4))
 
   def test_weighted_mean_shape(self):
-    input_signature = (ShapeDtype((29, 4, 4, 20)), ShapeDtype((29, 4, 4, 20)))
-    result_shape = base.check_shape_agreement(
-        metrics.WeightedMean(), input_signature)
-    self.assertEqual(result_shape, ())
+    layer = metrics._WeightedMean()
+    xs = [np.ones((9, 4, 4, 20)),
+          np.ones((9, 4, 4, 20))]
+    y = layer(xs)
+    self.assertEqual(y.shape, ())
 
   def test_weighted_mean_semantics(self):
-    inputs = onp.array([1, 2, 3], dtype=onp.float32)
-    weights1 = onp.array([1, 1, 1], dtype=onp.float32)
-    layer = metrics.WeightedMean()
-    full_signature = (signature(inputs), signature(weights1))
+    layer = metrics._WeightedMean()
+    sample_input = np.ones((3,))
+    sample_weights = np.ones((3,))
+    layer.init(shapes.signature([sample_input, sample_weights]))
+
+    x = np.array([1., 2., 3.])
+    weights = np.array([1., 1., 1.])
+    mean = layer((x, weights))
+    np.testing.assert_allclose(mean, 2.)
+
+    weights = np.array([0., 0., 1.])
+    mean = layer((x, weights))
+    np.testing.assert_allclose(mean, 3.)
+
+    weights = np.array([1., 0., 0.])
+    mean = layer((x, weights))
+    np.testing.assert_allclose(mean, 1.)
+
+  def test_weighted_sequence_mean_semantics(self):
+    layer = metrics._WeightedSequenceMean()
+    sample_input = np.ones((2, 3))
+    sample_weights = np.ones((3,))
+    full_signature = shapes.signature([sample_input, sample_weights])
     layer.init(full_signature)
-    mean1 = layer((inputs, weights1))
-    onp.testing.assert_allclose(mean1, 2.0)
-    weights2 = onp.array([0, 0, 1], dtype=onp.float32)
-    mean2 = layer((inputs, weights2))
-    onp.testing.assert_allclose(mean2, 3.0)
-    weights3 = onp.array([1, 0, 0], dtype=onp.float32)
-    mean3 = layer((inputs, weights3))
-    onp.testing.assert_allclose(mean3, 1.0)
 
-  def test_cross_entropy_scalar(self):
-    input_signature = (ShapeDtype((29, 4, 4, 20)), ShapeDtype((29, 4, 4)))
-    result_shape = base.check_shape_agreement(
-        metrics.CrossEntropyScalar(), input_signature)
-    self.assertEqual(result_shape, ())
+    x = np.array([[1., 1., 1.], [1., 1., 0.]])
+    weights = np.array([1., 1., 1.])
+    mean = layer((x, weights))
+    np.testing.assert_allclose(mean, 0.5)
 
-  def test_cross_entropy_loss_scalar(self):
-    input_signature = (ShapeDtype((29, 4, 4, 20)), ShapeDtype((29, 4, 4)))
-    result_shape = base.check_shape_agreement(
-        metrics.CrossEntropyLossScalar(), input_signature)
-    self.assertEqual(result_shape, ())
+    weights = np.array([1., 1., 0.])
+    mean = layer((x, weights))
+    np.testing.assert_allclose(mean, 1.)
+
+  def test_binary_cross_entropy_loss(self):
+    layer = tl.BinaryCrossEntropyLoss()
+    xs = [np.ones((9, 1)),
+          np.ones((9, 1)),
+          np.ones((9, 1))]
+    y = layer(xs)
+    self.assertEqual(y.shape, ())
+
+  def test_cross_entropy_loss(self):
+    layer = tl.CrossEntropyLoss()
+    xs = [np.ones((9, 4, 4, 20)),
+          np.ones((9, 4, 4)),
+          np.ones((9, 4, 4))]
+    y = layer(xs)
+    self.assertEqual(y.shape, ())
+
+  def test_binary_classifier(self):
+    layer = metrics.BinaryClassifier()
+    xs = [np.ones((9, 1))]
+    y = layer(xs)
+    self.assertEqual(y.shape, (9, 1))
+
+  def test_multiclass_classifier(self):
+    layer = metrics.MulticlassClassifier()
+    xs = [np.ones((9, 4, 4, 20))]
+    y = layer(xs)
+    self.assertEqual(y.shape, (9, 4, 4))
+
+  def test_accuracy_binary_scalar(self):
+    layer = tl.Accuracy(classifier=tl.BinaryClassifier())
+    xs = [np.ones((9, 1)),
+          np.ones((9, 1)),
+          np.ones((9, 1))]
+    y = layer(xs)
+    self.assertEqual(y.shape, ())
+
+  def test_accuracy_multiclass_scalar(self):
+    layer = tl.Accuracy(classifier=tl.MulticlassClassifier())
+    xs = [np.ones((9, 4, 4, 20)),
+          np.ones((9, 4, 4)),
+          np.ones((9, 4, 4))]
+    y = layer(xs)
+    self.assertEqual(y.shape, ())
 
   def test_accuracy_scalar(self):
-    input_signature = (ShapeDtype((29, 4, 4, 20)), ShapeDtype((29, 4, 4)))
-    result_shape = base.check_shape_agreement(
-        metrics.AccuracyScalar(), input_signature)
-    self.assertEqual(result_shape, ())
+    layer = tl.Accuracy()
+    xs = [np.ones((9, 4, 4, 20)),
+          np.ones((9, 4, 4)),
+          np.ones((9, 4, 4))]
+    y = layer(xs)
+    self.assertEqual(y.shape, ())
+
+  def test_l2_loss(self):
+    layer = tl.L2Loss()
+    sample_input = np.ones((2, 2))
+    sample_target = np.ones((2, 2))
+    sample_weights = np.ones((2, 2))
+    full_signature = shapes.signature([sample_input,
+                                       sample_target,
+                                       sample_weights])
+    layer.init(full_signature)
+
+    x = np.array([[1., 1.], [1., 1.]])
+    target = np.array([[1., 1.], [1., 0.]])
+    weights = np.array([[1., 1.], [1., 0.]])
+    loss = layer((x, target, weights))
+    np.testing.assert_allclose(loss, 0.0)
+
+    weights = np.array([[1., 0.], [0., 1.]])
+    loss = layer((x, target, weights))
+    np.testing.assert_allclose(loss, 0.5)
+
+  def test_smooth_l1_loss(self):
+    layer = tl.SmoothL1Loss()
+    sample_input = np.ones((2, 2))
+    sample_target = np.ones((2, 2))
+    sample_weights = np.ones((2, 2))
+    full_signature = shapes.signature([sample_input,
+                                       sample_target,
+                                       sample_weights])
+    layer.init(full_signature)
+
+    x = np.array([[1., 1.], [1., 2.]])
+    target = np.array([[1., 1.], [1., 0.]])
+    l1_dist = 2
+
+    weights = np.array([[1., 1.], [1., 0.]])
+    loss = layer((x, target, weights))
+    np.testing.assert_allclose(loss, 0.0)
+
+    weights = np.array([[1., 0.], [0., 1.]])
+    sum_weights = 2
+
+    loss = layer((x, target, weights))
+    np.testing.assert_allclose(loss, (l1_dist-0.5)/sum_weights)
+
+    x = np.array([[1., 1.], [1., 1.5]])
+    target = np.array([[1., 1.], [1., 1.]])
+    l1_dist = 0.5
+    loss = layer((x, target, weights))
+    np.testing.assert_allclose(loss, 0.5*l1_dist**2/sum_weights)
+
+  def test_names(self):
+    layer = tl.L2Loss()
+    self.assertEqual('L2Loss_in3', str(layer))
+    layer = tl.BinaryClassifier()
+    self.assertEqual('BinaryClassifier', str(layer))
+    layer = tl.MulticlassClassifier()
+    self.assertEqual('MulticlassClassifier', str(layer))
+    layer = tl.Accuracy()
+    self.assertEqual('Accuracy_in3', str(layer))
+    layer = tl.SequenceAccuracy()
+    self.assertEqual('SequenceAccuracy_in3', str(layer))
+    layer = tl.BinaryCrossEntropyLoss()
+    self.assertEqual('BinaryCrossEntropyLoss_in3', str(layer))
+    layer = tl.CrossEntropyLoss()
+    self.assertEqual('CrossEntropyLoss_in3', str(layer))
+    layer = tl.BinaryCrossEntropySum()
+    self.assertEqual('BinaryCrossEntropySum_in3', str(layer))
+    layer = tl.CrossEntropySum()
+    self.assertEqual('CrossEntropySum_in3', str(layer))
 
 
 if __name__ == '__main__':

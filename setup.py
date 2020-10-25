@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -13,6 +13,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+# coding=utf-8
 """Install trax."""
 
 from setuptools import find_packages
@@ -20,7 +21,7 @@ from setuptools import setup
 
 setup(
     name='trax',
-    version='1.1.2',
+    version='1.3.6',
     description='Trax',
     long_description=(
         'Trax helps you understand deep learning. We start with basic maths and'
@@ -34,28 +35,33 @@ setup(
     license='Apache 2.0',
     packages=find_packages(),
     install_requires=[
+        'absl-py',
+        'funcsigs',
         'gin-config',
         'gym',
+        'jax',
+        'jaxlib',
         'numpy',
         'scipy',
         'six',
-        'jax',
-        'jaxlib',
-        'tensor2tensor',
+        't5',
         'tensorflow-datasets',
-        'absl-py',
+        'tensorflow-text',
     ],
     extras_require={
-        'tensorflow': ['tensorflow>=1.14.0'],
-        'tensorflow_gpu': ['tensorflow-gpu>=1.14.0'],
+        'tensorflow': ['tensorflow>=1.15.0'],
+        'tensorflow_gpu': ['tensorflow-gpu>=1.15.0'],
         'tests': [
             'attrs',
-            'pytest',
-            'mock',
-            'pylint',
             'jupyter',
             'matplotlib',
+            'mock',
+            'parameterized',
+            'pylint',
+            'pytest',
+            'wrapt==1.11.*',
         ],
+        't2t': ['tensor2tensor',],
     },
     classifiers=[
         'Development Status :: 4 - Beta',

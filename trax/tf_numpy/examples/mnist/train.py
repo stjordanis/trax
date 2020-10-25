@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -21,6 +21,7 @@ from __future__ import print_function
 from absl import app
 from absl import flags
 
+from six.moves import range
 import tensorflow.compat.v2 as tf
 
 from trax.tf_numpy.examples.mnist import dataset
@@ -68,7 +69,7 @@ def train(batch_size, learning_rate, num_training_iters, validation_steps):
   for i in range(num_training_iters):
     train_x, train_y = next(train_iter)
     model.train(train_x, train_y, learning_rate)
-    if not (i + 1) % validation_steps:
+    if (i + 1) % validation_steps == 0:
       validation_iter = build_iterator(validation_data, infinite=False)
       correct_predictions = 0
       for valid_x, valid_y in validation_iter:

@@ -1,5 +1,5 @@
 # coding=utf-8
-# Copyright 2019 The Trax Authors.
+# Copyright 2020 The Trax Authors.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -15,38 +15,27 @@
 
 """Trax RL library."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-
 import gin
 
-from trax.rl import simulated_env_problem
+from trax.rl import actor_critic
+from trax.rl import actor_critic_joint
+from trax.rl import training
 
 
 def configure_rl(*args, **kwargs):
   kwargs['module'] = 'trax.rl'
+  kwargs['blacklist'] = ['task', 'output_dir']
   return gin.external_configurable(*args, **kwargs)
 
 
-def configure_simulated_env_problem(*args, **kwargs):
-  kwargs['blacklist'] = [
-      'batch_size', 'observation_space', 'action_space', 'reward_range',
-      'discrete_rewards', 'history_stream', 'output_dir']
-  return configure_rl(*args, **kwargs)
+A2C = configure_rl(actor_critic.A2C)
+AWR = configure_rl(actor_critic.AWR)
+PPO = configure_rl(actor_critic.PPO)
+SamplingAWR = configure_rl(actor_critic.SamplingAWR)
 
+A2CJoint = configure_rl(actor_critic_joint.A2CJoint)
+AWRJoint = configure_rl(actor_critic_joint.AWRJoint)
+PPOJoint = configure_rl(actor_critic_joint.PPOJoint)
 
-# pylint: disable=invalid-name
-RawSimulatedEnvProblem = configure_simulated_env_problem(
-    simulated_env_problem.RawSimulatedEnvProblem)
-SerializedSequenceSimulatedEnvProblem = configure_simulated_env_problem(
-    simulated_env_problem.SerializedSequenceSimulatedEnvProblem)
-
-
-# pylint: disable=invalid-name
-cartpole_done_fn = configure_rl(simulated_env_problem.cartpole_done_fn)
-cartpole_reward_fn = configure_rl(simulated_env_problem.cartpole_reward_fn)
-acrobot_done_fn = configure_rl(simulated_env_problem.acrobot_done_fn)
-acrobot_reward_fn = configure_rl(simulated_env_problem.acrobot_reward_fn)
-onlinetune_done_fn = configure_rl(simulated_env_problem.onlinetune_done_fn)
-onlinetune_reward_fn = configure_rl(simulated_env_problem.onlinetune_reward_fn)
+PolicyGradient = configure_rl(training.PolicyGradient)
+DQN = configure_rl(training.DQN)
